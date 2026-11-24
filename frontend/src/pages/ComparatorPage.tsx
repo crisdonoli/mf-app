@@ -355,8 +355,8 @@ export const ComparatorPage: React.FC = () => {
     const activeMeetingDate = activeRadarTick?.meeting_date || "";
     const activePeriodLabel = activeRadarTick?.period_label || "";
     const sliceSuffix =
-      (activeRadarTick?.slice_total || nPartitions) > 1
-        ? ` · S${activeSliceNum}/${activeRadarTick?.slice_total || nPartitions}`
+      (activeRadarTick?.total_slices || nPartitions) > 1
+        ? ` · S${activeSliceNum}/${activeRadarTick?.total_slices || nPartitions}`
         : "";
 
     const rawTraces = availableSeries.map((s) => {
@@ -435,11 +435,11 @@ export const ComparatorPage: React.FC = () => {
           isFocused: true,
         });
       } else if (activeRadarTick && resolvedTimeSeries.cohorts.length > 0) {
-        const pointVec = comparison.categories.map((cat) => {
+        const pointVec = comparison.categories.map((_, catIdx) => {
           let sum = 0;
           let cnt = 0;
           for (const coh of resolvedTimeSeries.cohorts) {
-            const v = coh.topic_series?.[cat.id]?.[safeRadarTickIdx];
+            const v = coh.values_by_topic?.[catIdx]?.[safeRadarTickIdx];
             if (typeof v === "number" && Number.isFinite(v)) {
               sum += v;
               cnt += 1;
