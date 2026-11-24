@@ -53,9 +53,9 @@ function makeThemeAdaptiveSvg(rawSvg: string): string {
     )
     .replace(/<svg\b([^>]*)>/i, (_match, attrs: string) => {
       const cleaned = attrs
-        .replace(/\b(width|height)="[^"]*"/gi, "")
+        .replace(/\b(width|height|class)="[^"]*"/gi, "")
         .trim();
-      return `<svg ${cleaned} class="h-7 w-auto block">`;
+      return `<svg ${cleaned} width="140" height="28" class="h-7 w-[140px] block shrink-0">`;
     });
 }
 
@@ -494,23 +494,23 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
         <main className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8">{children}</main>
       </div>
 
-      {/* Institutional Footer with Relocated FEN Logo */}
+      {/* Institutional Footer with Centered FEN Logo & Caption */}
       <footer className="border-t border-border bg-surface/90 mt-auto">
-        <div className="max-w-[1640px] mx-auto px-4 sm:px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+        <div className="max-w-[1640px] mx-auto px-4 sm:px-6 py-6 flex flex-col items-center justify-center gap-3 text-center">
           <a
             href="https://fen.uchile.cl/"
             target="_blank"
             rel="noopener noreferrer"
             title="FEN — Facultad de Economía y Negocios, Universidad de Chile"
-            className="inline-flex items-center opacity-90 hover:opacity-100 transition-opacity"
+            className="inline-flex items-center justify-center opacity-95 hover:opacity-100 transition-opacity"
           >
             <img
               src={isDark ? fenDarkLogo : fenLightLogo}
               alt="FEN — Universidad de Chile"
-              className="h-8 w-auto object-contain"
+              className="h-12 sm:h-14 w-auto object-contain mx-auto"
             />
           </a>
-          <p className="text-xs font-mono text-muted text-center sm:text-right">
+          <p className="text-xs font-mono text-muted text-center">
             © {currentYear} · Proyecto financiado por Fondos de Investigacion FEN.
           </p>
         </div>
