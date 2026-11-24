@@ -276,12 +276,12 @@ export const LandingPage: React.FC = () => {
         </div>
 
         <div
-          className="panel overflow-hidden"
+          className="panel overflow-hidden max-w-4xl mx-auto"
           onMouseEnter={() => setAutoPlay(false)}
           onMouseLeave={() => setAutoPlay(true)}
         >
-          {/* Slide Viewport */}
-          <div className="relative bg-canvas border-b border-border overflow-hidden aspect-[16/9] max-h-[560px] w-full flex items-center justify-center">
+          {/* Compact Slide Viewport with Subtle Image Transparency & Frosted Text Overlay */}
+          <div className="relative bg-canvas border-b border-border overflow-hidden aspect-[16/9] max-h-[420px] w-full flex items-center justify-center group">
             {PREVIEW_SLIDES.map((slide, idx) => {
               const isCurrent = idx === activeSlide;
               return (
@@ -293,18 +293,37 @@ export const LandingPage: React.FC = () => {
                   decoding="async"
                   onClick={() => setLightboxOpen(true)}
                   className={`absolute inset-0 w-full h-full object-contain cursor-zoom-in transition-opacity duration-300 ${
-                    isCurrent ? "opacity-100 z-10" : "opacity-0 pointer-events-none z-0"
+                    isCurrent
+                      ? "opacity-75 group-hover:opacity-90 z-10"
+                      : "opacity-0 pointer-events-none z-0"
                   }`}
                 />
               );
             })}
+
+            {/* Subtle Bottom Gradient + Frosted Glass Caption Overlay */}
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 p-3 sm:p-4 bg-gradient-to-t from-black/65 via-black/30 to-transparent">
+              <div className="pointer-events-auto max-w-2xl rounded-sm bg-surface/75 dark:bg-slate-950/70 backdrop-blur-md border border-border/70 px-4 py-3 shadow-lg space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="mono-tag border-accent text-accent-dark bg-accent-soft/90 text-[10px]">
+                    {PREVIEW_SLIDES[activeSlide].badge}
+                  </span>
+                </div>
+                <h3 className="text-sm sm:text-base font-semibold text-ink leading-snug">
+                  {PREVIEW_SLIDES[activeSlide].title}
+                </h3>
+                <p className="text-xs sm:text-[13px] text-ink/85 dark:text-slate-200/90 leading-relaxed">
+                  {PREVIEW_SLIDES[activeSlide].description}
+                </p>
+              </div>
+            </div>
 
             {/* Left / Right Navigation Arrows */}
             <button
               type="button"
               onClick={goPrev}
               aria-label="Previous preview"
-              className="absolute left-3 top-1/2 -translate-y-1/2 z-20 h-9 w-9 rounded-sm bg-surface/90 hover:bg-surface border border-border hover:border-accent text-ink flex items-center justify-center shadow-md transition-colors"
+              className="absolute left-3 top-1/2 -translate-y-1/2 z-30 h-9 w-9 rounded-sm bg-surface/85 hover:bg-surface backdrop-blur-sm border border-border hover:border-accent text-ink flex items-center justify-center shadow-md transition-colors"
             >
               <ChevronLeft className="w-5 h-5" />
             </button>
@@ -312,30 +331,15 @@ export const LandingPage: React.FC = () => {
               type="button"
               onClick={goNext}
               aria-label="Next preview"
-              className="absolute right-3 top-1/2 -translate-y-1/2 z-20 h-9 w-9 rounded-sm bg-surface/90 hover:bg-surface border border-border hover:border-accent text-ink flex items-center justify-center shadow-md transition-colors"
+              className="absolute right-3 top-1/2 -translate-y-1/2 z-30 h-9 w-9 rounded-sm bg-surface/85 hover:bg-surface backdrop-blur-sm border border-border hover:border-accent text-ink flex items-center justify-center shadow-md transition-colors"
             >
               <ChevronRight className="w-5 h-5" />
             </button>
           </div>
 
-          {/* Active Slide Caption & Selector Pills */}
-          <div className="p-5 sm:p-6 bg-surface space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
-              <div className="space-y-1.5">
-                <span className="mono-tag border-accent text-accent-dark bg-accent-soft">
-                  {PREVIEW_SLIDES[activeSlide].badge}
-                </span>
-                <h3 className="text-base sm:text-lg font-semibold text-ink">
-                  {PREVIEW_SLIDES[activeSlide].title}
-                </h3>
-                <p className="text-sm text-muted leading-relaxed max-w-3xl">
-                  {PREVIEW_SLIDES[activeSlide].description}
-                </p>
-              </div>
-            </div>
-
-            {/* Thumbnail / Step Selector Strip */}
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 pt-2 border-t border-border">
+          {/* Thumbnail / Step Selector Strip */}
+          <div className="p-3 sm:p-4 bg-surface">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
               {PREVIEW_SLIDES.map((slide, idx) => {
                 const isCurrent = idx === activeSlide;
                 return (
