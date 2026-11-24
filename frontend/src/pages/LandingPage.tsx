@@ -19,12 +19,14 @@ import {
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { useWorkspace } from "../context/WorkspaceContext";
+import { HeroTopicGraph } from "../components/HeroTopicGraph";
 import { api } from "../lib/api";
 import preview1 from "../static/previews/1.webp";
 import preview2 from "../static/previews/2.webp";
 import preview3 from "../static/previews/3.webp";
 import preview4 from "../static/previews/4.webp";
 import preview5 from "../static/previews/5.webp";
+import preview6 from "../static/previews/6.webp";
 import type { CorpusStats, TaxonomyResponse } from "../types/api";
 
 interface PreviewSlide {
@@ -75,6 +77,14 @@ const PREVIEW_SLIDES: PreviewSlide[] = [
     title: "Direct CSV Exports, Research Portfolio & Study Sharing",
     description:
       "Download full chronological tables directly to CSV, save reproducible study configurations to your personal Portfolio, and publish or fork shared analyses with the research community.",
+  },
+  {
+    id: 6,
+    src: preview6,
+    badge: "06 · GROUPING TREE",
+    title: "Multi-Criteria Document Grouping & Cohort Analysis",
+    description:
+      "Build hierarchical grouping trees by speaker, role, gender, document type, year range, quarter, or semester—and selectively toggle branches to compare custom document cohorts.",
   },
 ];
 
@@ -144,46 +154,54 @@ export const LandingPage: React.FC = () => {
 
   return (
     <div className="max-w-6xl mx-auto space-y-12 pb-16">
-      {/* Editorial Hero */}
-      <section className="panel p-8 sm:p-12">
-        <div className="flex flex-wrap items-center gap-2 mb-5">
-          <span className="mono-tag border-accent text-accent-dark bg-accent-soft">
-            FEDERAL OPEN MARKET COMMITTEE
-          </span>
-          <span className="mono-tag">1976 — 2020 CORPUS</span>
-          <span className="mono-tag">OUT-OF-CORE PARQUET · DUCKDB</span>
-        </div>
+      {/* Editorial Hero with Dynamic Macroeconomic Topic Graph */}
+      <section className="panel p-8 sm:p-12 overflow-hidden">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+          <div className="lg:col-span-7">
+            <div className="flex flex-wrap items-center gap-2 mb-5">
+              <span className="mono-tag border-accent text-accent-dark bg-accent-soft">
+                FEDERAL OPEN MARKET COMMITTEE
+              </span>
+              <span className="mono-tag">1976 — 2020 CORPUS</span>
+              <span className="mono-tag">OUT-OF-CORE PARQUET · DUCKDB</span>
+            </div>
 
-        <h1 className="text-3xl sm:text-5xl font-bold tracking-tight text-ink max-w-3xl leading-[1.08]">
-          Structured Macroeconomic Analysis of Historical FOMC Deliberations.
-        </h1>
+            <h1 className="text-3xl sm:text-5xl font-bold tracking-tight text-ink leading-[1.08]">
+              Structured Macroeconomic Analysis of Historical FOMC Deliberations.
+            </h1>
 
-        <p className="mt-5 text-base sm:text-lg text-muted max-w-2xl leading-relaxed">
-          MiningFOMC pairs zero-shot macroeconomic classification with dense BGE-M3 prototype
-          similarity matrices—enabling instant inspection of meeting bundles and standardized
-          cross-document comparisons without memory bloat.
-        </p>
+            <p className="mt-5 text-base sm:text-lg text-muted max-w-2xl leading-relaxed">
+              MiningFOMC pairs zero-shot macroeconomic classification with dense BGE-M3 prototype
+              similarity matrices—enabling instant inspection of meeting bundles and standardized
+              cross-document comparisons without memory bloat.
+            </p>
 
-        <div className="mt-8 flex flex-wrap items-center gap-3">
-          {user ? (
-            <>
-              <Link to="/explorer" className="btn-primary px-5 py-2.5">
-                <Search className="w-4 h-4" />
-                Launch Database Explorer
-                <ArrowRight className="w-4 h-4" />
-              </Link>
-              <Link to="/comparator" className="btn-secondary px-5 py-2.5">
-                <GitCompare className="w-4 h-4" />
-                Open Document Comparator
-              </Link>
-            </>
-          ) : (
-            <Link to="/login" className="btn-primary px-5 py-2.5">
-              <Lock className="w-4 h-4" />
-              Sign In or Request Researcher Access
-              <ArrowRight className="w-4 h-4" />
-            </Link>
-          )}
+            <div className="mt-8 flex flex-wrap items-center gap-3">
+              {user ? (
+                <>
+                  <Link to="/explorer" className="btn-primary px-5 py-2.5">
+                    <Search className="w-4 h-4" />
+                    Launch Database Explorer
+                    <ArrowRight className="w-4 h-4" />
+                  </Link>
+                  <Link to="/comparator" className="btn-secondary px-5 py-2.5">
+                    <GitCompare className="w-4 h-4" />
+                    Open Document Comparator
+                  </Link>
+                </>
+              ) : (
+                <Link to="/login" className="btn-primary px-5 py-2.5">
+                  <Lock className="w-4 h-4" />
+                  Sign In or Request Researcher Access
+                  <ArrowRight className="w-4 h-4" />
+                </Link>
+              )}
+            </div>
+          </div>
+
+          <div className="lg:col-span-5 hidden sm:flex items-center justify-center">
+            <HeroTopicGraph />
+          </div>
         </div>
       </section>
 
@@ -339,7 +357,7 @@ export const LandingPage: React.FC = () => {
 
           {/* Thumbnail / Step Selector Strip */}
           <div className="p-3 sm:p-4 bg-surface">
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
               {PREVIEW_SLIDES.map((slide, idx) => {
                 const isCurrent = idx === activeSlide;
                 return (

@@ -18,6 +18,7 @@ import {
   Plus,
   Search,
   Sparkles,
+  Table2,
   Trash2,
   X,
 } from "lucide-react";
@@ -184,7 +185,8 @@ export const GroupingTreeModal: React.FC<GroupingTreeModalProps> = ({
   const [nodeSplits, setNodeSplits] = useState<Record<string, SplitLevelConfig>>(
     initialConfig?.node_splits || {}
   );
-  const [graphLayout, setGraphLayout] = useState<"force" | "tree">("force");
+  const [graphLayout, setGraphLayout] = useState<"force" | "tree" | "table">("force");
+  const [tableFilter, setTableFilter] = useState<string>("");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
   // Draft sub-group configuration inside the floating node context panel
@@ -242,6 +244,30 @@ export const GroupingTreeModal: React.FC<GroupingTreeModalProps> = ({
     if (!preview?.root) return new Map<string, GroupingTreeNode>();
     return flattenNodes(preview.root);
   }, [preview]);
+
+  const orderedNodesList = useMemo(() => {
+    if (!preview?.root) return [] as GroupingTreeNode[];
+    const list: GroupingTreeNode[] = [];
+    const walk = (n: GroupingTreeNode) => {
+      list.push(n);
+      for (const ch of n.children || []) walk(ch);
+    };
+    walk(preview.root);
+    return list;
+  }, [preview]);
+
+  const filteredTableNodes = useMemo(() => {
+    const q = tableFilter.trim().toLowerCase();
+    if (!q) return orderedNodesList;
+    return orderedNodesList.filter((n) => {
+      const pathStr = n.path_filters.map((f) => f.label).join(" ").toLowerCase();
+      return (
+        n.label.toLowerCase().includes(q) ||
+        n.criterion.toLowerCase().includes(q) ||
+        pathStr.includes(q)
+      );
+    });
+  }, [orderedNodesList, tableFilter]);
 
   const selectedNode = selectedNodeId ? nodesById.get(selectedNodeId) || null : null;
 
@@ -518,7 +544,7 @@ export const GroupingTreeModal: React.FC<GroupingTreeModalProps> = ({
                   graphLayout === "force" ? "bg-ink text-white" : "text-muted hover:text-ink"
                 }`}
               >
-                Obsidian Force
+                Graph
               </button>
               <button
                 type="button"
@@ -528,6 +554,16 @@ export const GroupingTreeModal: React.FC<GroupingTreeModalProps> = ({
                 }`}
               >
                 Hierarchical
+              </button>
+              <button
+                type="button"
+                onClick={() => setGraphLayout("table")}
+                className={`px-2.5 py-1 border-l border-border inline-flex items-center gap-1 ${
+                  graphLayout === "table" ? "bg-ink text-white" : "text-muted hover:text-ink"
+                }`}
+              >
+                <Table2 className="w-3 h-3" />
+                Table
               </button>
             </div>
             <button
@@ -639,13 +675,143 @@ export const GroupingTreeModal: React.FC<GroupingTreeModalProps> = ({
           )}
         </div>
 
-        {/* Obsidian Interactive Graph Canvas + Floating Contextual Node Menu */}
-        <div className="flex-1 relative bg-canvas overflow-hidden">
+        {/* Interactive Graph Canvas / Table View + Floating Contextual Node Menu */}
+        <div className="flex-1 relative bg-canvas overflow-hidden flex flex-col">
           {error ? (
             <div className="p-5 text-xs font-mono text-red-700 bg-red-50">{error}</div>
           ) : loading && !preview ? (
             <div className="h-full flex items-center justify-center text-xs font-mono text-muted">
               Computing interactive partition graph...
+            </div>
+          ) : preview && graphLayout === "table" ? (
+            <div className="flex-1 flex flex-col overflow-hidden bg-surface">
+              <div className="px-4 py-2.5 border-b border-border bg-canvas flex flex-wrap items-center justify-between gap-2 shrink-0">
+                <input
+                  type="text"
+                  value={tableFilter}
+                  onChange={(e) => setTableFilter(e.target.value)}
+                  placeholder="Filter tree nodes by label, path, or criterion..."
+                  className="input-field py-1 px-2.5 text-xs max-w-sm"
+                />
+                <span className="text-[11px] font-mono text-muted">
+                  Showing {filteredTableNodes.length} of {orderedNodesList.length} nodes · Click a
+                  row to partition independently
+                </span>
+              </div>
+              <div className="flex-1 overflow-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-border bg-canvas sticky top-0 z-10 text-[10px] font-mono uppercase text-muted">
+                      <th className="py-2 px-3">Hierarchy / Node</th>
+                      <th className="py-2 px-3">Criterion</th>
+                      <th className="py-2 px-3 text-right">Docs</th>
+                      <th className="py-2 px-3">Status</th>
+                      <th className="py-2 px-3 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {filteredTableNodes.map((n) => {
+                      const isSelected = n.id === selectedNodeId;
+                      const isLeaf = !n.children || n.children.length === 0;
+                      const hasCustomSplit = Boolean(nodeSplits[n.id]);
+                      const pathTitle =
+                        n.path_filters.length > 0
+                          ? n.path_filters.map((f) => f.label).join(" → ")
+                          : "All Selected Documents";
+                      return (
+                        <tr
+                          key={n.id}
+                          onClick={() => setSelectedNodeId(n.id)}
+                          className={`cursor-pointer transition-colors ${
+                            isSelected
+                              ? "bg-accent-soft/70"
+                              : n.effectively_hidden
+                              ? "opacity-50 hover:bg-canvas"
+                              : "hover:bg-canvas"
+                          }`}
+                        >
+                          <td className="py-2 px-3 font-medium text-ink">
+                            <div
+                              className="flex items-center gap-1.5"
+                              style={{ paddingLeft: `${n.level * 18}px` }}
+                            >
+                              <span
+                                className="w-2 h-2 rounded-full shrink-0"
+                                style={{
+                                  backgroundColor: n.effectively_hidden
+                                    ? "#94A3B8"
+                                    : LEVEL_COLORS[n.level % LEVEL_COLORS.length],
+                                }}
+                              />
+                              <span className="truncate">{n.label}</span>
+                              {hasCustomSplit && (
+                                <span className="mono-tag text-[9px] border-emerald-500/60 text-emerald-700 dark:text-emerald-300">
+                                  split: {nodeSplits[n.id].criterion}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="py-2 px-3 font-mono text-[11px] text-muted">
+                            L{n.level} · {n.criterion}
+                          </td>
+                          <td className="py-2 px-3 font-mono text-right font-semibold text-ink">
+                            {n.doc_count}
+                          </td>
+                          <td className="py-2 px-3 font-mono text-[10px]">
+                            {n.effectively_hidden ? (
+                              <span className="mono-tag text-zinc-500">Hidden</span>
+                            ) : isLeaf ? (
+                              <span className="mono-tag border-accent text-accent-dark bg-accent-soft">
+                                Active Leaf
+                              </span>
+                            ) : (
+                              <span className="mono-tag">Branch ({n.children.length})</span>
+                            )}
+                          </td>
+                          <td
+                            className="py-2 px-3 text-right whitespace-nowrap"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <div className="inline-flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => setSelectedNodeId(n.id)}
+                                title="Partition / Sub-Group this node"
+                                className="btn-secondary py-0.5 px-2 text-[11px]"
+                              >
+                                <GitBranch className="w-3 h-3" />
+                                Split
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => onInspectNode(pathTitle, n.path_filters)}
+                                title="Inspect chunks in this node"
+                                className="btn-secondary py-0.5 px-2 text-[11px]"
+                              >
+                                <Search className="w-3 h-3" />
+                              </button>
+                              {n.level > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => toggleNodeHidden(n.id)}
+                                  title={n.hidden ? "Show branch" : "Hide branch"}
+                                  className="btn-secondary py-0.5 px-2 text-[11px]"
+                                >
+                                  {n.hidden ? (
+                                    <Eye className="w-3 h-3" />
+                                  ) : (
+                                    <EyeOff className="w-3 h-3" />
+                                  )}
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           ) : preview ? (
             <EChartBox
@@ -790,9 +956,11 @@ export const GroupingTreeModal: React.FC<GroupingTreeModalProps> = ({
           )}
 
           {/* Subtle Graph Controls Legend */}
-          <div className="absolute bottom-3 left-3 px-2.5 py-1.5 rounded-sm bg-surface/90 border border-border text-[10px] font-mono text-muted pointer-events-none">
-            Scroll to zoom · Drag background to pan · Click any node for partition menu
-          </div>
+          {graphLayout !== "table" && (
+            <div className="absolute bottom-3 left-3 px-2.5 py-1.5 rounded-sm bg-surface/90 border border-border text-[10px] font-mono text-muted pointer-events-none">
+              Scroll to zoom · Drag background to pan · Click any node for partition menu
+            </div>
+          )}
         </div>
 
         {/* Footer with Live Leaf Counter & Apply Button */}
