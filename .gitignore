@@ -1,0 +1,22 @@
+# Python & FastAPI backend
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+backend/data/*.db
+backend/data/*.db-*
+
+# Frontend Node / Vite build
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Local environment secrets
+.env
+.env.local
+.DS_Store
+
+# Note: ./fomc-data/ (including VERSION.json, manifest.json, and Parquet partitions)
+# is intentionally tracked in Git so the standalone fomc-app repository is self-contained
+# and versioned (< 200 MB total, max single file < 9 MB).

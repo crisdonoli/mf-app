@@ -1,0 +1,294 @@
+{
+  "doc_type": "transcripts",
+  "meetings": 487,
+  "participants": 24148,
+  "files_written": 45,
+  "preamble_parsed": 479,
+  "preamble_failed": 8,
+  "preamble_parse_rate": 0.9836,
+  "meetings_without_preamble": [
+    "transcripts_1976-11-08",
+    "transcripts_1978-03-10",
+    "transcripts_1978-05-05",
+    "transcripts_1979-06-27",
+    "transcripts_1980-04-29",
+    "transcripts_1980-07-25",
+    "transcripts_1982-05-20",
+    "transcripts_1992-12-14"
+  ],
+  "source_counts": {
+    "both": 10896,
+    "preamble": 12974,
+    "speaker": 278
+  },
+  "role_category_counts": {
+    "member": 5444,
+    "alternate_member": 1895,
+    "president": 1299,
+    "staff": 15428,
+    "unknown": 82
+  },
+  "speaker_ids": {
+    "with_ids": 11174,
+    "without_ids": 12974,
+    "distinct_ids": 423
+  },
+  "participants_per_meeting": {
+    "min": 9,
+    "median": 49,
+    "max": 81
+  },
+  "normalisation_examples": {
+    "preamble_typos": [
+      [
+        "altmacn",
+        "altmann"
+      ],
+      [
+        "boehn",
+        "boehne"
+      ],
+      [
+        "carson",
+        "carlson"
+      ],
+      [
+        "davies",
+        "davis"
+      ],
+      [
+        "eerguson",
+        "ferguson"
+      ],
+      [
+        "gramleyl",
+        "gramley"
+      ],
+      [
+        "hoeing",
+        "hoenig"
+      ],
+      [
+        "kreiger",
+        "krieger"
+      ],
+      [
+        "mannnion",
+        "mannion"
+      ],
+      [
+        "meulenydke",
+        "meulendyke"
+      ],
+      [
+        "promise",
+        "promisel"
+      ],
+      [
+        "roberds",
+        "roberts"
+      ],
+      [
+        "weir",
+        "wei"
+      ],
+      [
+        "ziesel",
+        "zeisel"
+      ]
+    ],
+    "speaker_variants": [
+      [
+        "bohne",
+        "boehne"
+      ],
+      [
+        "eisemenger",
+        "eisenmenger"
+      ],
+      [
+        "forestall",
+        "forrestal"
+      ],
+      [
+        "geither",
+        "geithner"
+      ],
+      [
+        "graley",
+        "gramley"
+      ],
+      [
+        "greenpan",
+        "greenspan"
+      ],
+      [
+        "greenpsan",
+        "greenspan"
+      ],
+      [
+        "greespan",
+        "greenspan"
+      ],
+      [
+        "grenspan",
+        "greenspan"
+      ],
+      [
+        "homes",
+        "holmes"
+      ],
+      [
+        "kaskari",
+        "kashkari"
+      ],
+      [
+        "kimerel",
+        "kimbrel"
+      ],
+      [
+        "kocherlokta",
+        "kocherlakota"
+      ],
+      [
+        "kocoherlakota",
+        "kocherlakota"
+      ],
+      [
+        "lauabach",
+        "laubach"
+      ],
+      [
+        "macclaury",
+        "maclaury"
+      ],
+      [
+        "mattlingly",
+        "mattingly"
+      ],
+      [
+        "mcdonald",
+        "macdonald"
+      ],
+      [
+        "mcdonugh",
+        "mcdonough"
+      ],
+      [
+        "miler",
+        "miller"
+      ],
+      [
+        "milier",
+        "miller"
+      ],
+      [
+        "mjller",
+        "miller"
+      ],
+      [
+        "monhollan",
+        "monhollon"
+      ],
+      [
+        "morrris",
+        "morris"
+      ],
+      [
+        "moscow",
+        "moskow"
+      ],
+      [
+        "schield",
+        "scheld"
+      ],
+      [
+        "timlex",
+        "timlen"
+      ],
+      [
+        "truman-",
+        "truman"
+      ],
+      [
+        "volckfr",
+        "volcker"
+      ],
+      [
+        "volcrer",
+        "volcker"
+      ],
+      [
+        "volker",
+        "volcker"
+      ],
+      [
+        "walljch",
+        "wallich"
+      ],
+      [
+        "willzams",
+        "williams"
+      ],
+      [
+        "wuerfell",
+        "wuerffel"
+      ]
+    ]
+  },
+  "meetings_without_participants": [
+    "transcripts_1982-05-20"
+  ],
+  "roster": {
+    "path": "/home/choroy/projects/humberto/fomc-data/data/staff-members.xlsx",
+    "loaded": true,
+    "rescued_rows": 182,
+    "rescued_names": [
+      "angell",
+      "balles",
+      "baughman",
+      "black",
+      "boehne",
+      "boykin",
+      "broaddus",
+      "coldwell",
+      "eastburn",
+      "forrestal",
+      "gardner",
+      "gramley",
+      "guffey",
+      "heller",
+      "hendricks",
+      "hoenig",
+      "holland",
+      "hoskins",
+      "jackson",
+      "johnson",
+      "jordan",
+      "keehn",
+      "kelley",
+      "kimbrel",
+      "laware",
+      "lilly",
+      "mayo",
+      "melzer",
+      "meyer",
+      "morris",
+      "moskow",
+      "mullins",
+      "parry",
+      "partee",
+      "phillips",
+      "rice",
+      "roos",
+      "schultz",
+      "seger",
+      "stern",
+      "teeters",
+      "timlen",
+      "wallich",
+      "willes",
+      "winn"
+    ]
+  }
+}

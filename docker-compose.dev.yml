@@ -1,0 +1,46 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      target: dev
+    container_name: miningfomc-backend-dev
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      ENVIRONMENT: development
+      DATA_DIR: /fomc-data
+      FOMC_SIMILARITIES_DIR: /fomc-similarities
+      FOMC_LABELS_DIR: /fomc-labels
+      FOMC_RELEVANCE_DIR: /fomc-relevance
+      CORRECTIONS_DIR: /fomc-corrections
+      DATABASE_URL: sqlite:///./data/miningfomc.db
+      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+    volumes:
+      - ./backend/app:/app/app
+      - ${HOST_FOMC_DATA_DIR:-./fomc-data}:/fomc-data:ro
+      - ${HOST_SIMILARITIES_DIR:-./fomc-data/similarities/model=bge-m3/pooling=chunk}:/fomc-similarities:ro
+      - ${HOST_LABELS_DIR:-./fomc-data/labels/zero_shot}:/fomc-labels:ro
+      - ${HOST_RELEVANCE_DIR:-./fomc-data/relevance/model}:/fomc-relevance:ro
+      - ./fomc-data/corrections:/fomc-corrections:rw
+      - miningfomc_dev_db:/app/data
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    container_name: miningfomc-frontend-dev
+    environment:
+      VITE_API_PROXY_TARGET: http://backend:8000
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/index.html:/app/index.html
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+volumes:
+  miningfomc_dev_db:

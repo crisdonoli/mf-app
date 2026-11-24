@@ -1,0 +1,29 @@
+# Production Caddyfile for miningfomc.com
+# Automatic Let's Encrypt HTTPS certificates over ports 80/443
+
+www.miningfomc.com {
+    redir https://miningfomc.com{uri} permanent
+}
+
+miningfomc.com {
+    encode zstd gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+
+    handle /api/* {
+        reverse_proxy backend:8000 {
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    handle {
+        reverse_proxy frontend:80
+    }
+}

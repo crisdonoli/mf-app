@@ -1,0 +1,121 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --color-canvas: 248 250 252;      /* #F8FAFC */
+    --color-surface: 255 255 255;     /* #FFFFFF */
+    --color-ink: 15 23 42;            /* #0F172A */
+    --color-muted: 71 85 105;         /* #475569 */
+    --color-border: 226 232 240;      /* #E2E8F0 */
+    --color-accent: 29 78 216;        /* #1D4ED8 Institutional Royal Blue */
+    --color-accent-dark: 30 58 138;   /* #1E3A8A Institutional Navy */
+    --color-accent-soft: 239 246 255; /* #EFF6FF Blue-50 */
+    color-scheme: light;
+  }
+
+  .dark {
+    --color-canvas: 11 17 32;         /* #0B1120 Deep Institutional Slate */
+    --color-surface: 17 24 39;        /* #111827 Slate-900 */
+    --color-ink: 248 250 252;         /* #F8FAFC Slate-50 */
+    --color-muted: 148 163 184;       /* #94A3B8 Slate-400 */
+    --color-border: 31 41 55;         /* #1F2937 Slate-800 */
+    --color-accent: 59 130 246;       /* #3B82F6 Blue-500 */
+    --color-accent-dark: 96 165 250;  /* #60A5FA Blue-400 */
+    --color-accent-soft: 23 37 84;    /* #172554 Blue-950 */
+    color-scheme: dark;
+  }
+
+  html {
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    background-color: rgb(var(--color-canvas));
+    color: rgb(var(--color-ink));
+  }
+
+  h1, h2, h3, h4 {
+    font-family: "Space Grotesk", "Inter", system-ui, sans-serif;
+    letter-spacing: -0.02em;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply bg-surface border border-border rounded-sm;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium
+           bg-[#1E3A8A] text-white border border-[#1E3A8A] rounded-sm hover:bg-[#1D4ED8]
+           dark:bg-[#2563EB] dark:border-[#2563EB] dark:hover:bg-[#3B82F6]
+           transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 px-3.5 py-2 text-sm font-medium
+           bg-surface text-ink border border-border rounded-sm hover:border-accent
+           transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .input-field {
+    @apply w-full px-3 py-2 text-sm bg-surface border border-border rounded-sm
+           text-ink placeholder:text-zinc-400 dark:placeholder:text-slate-500
+           focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30
+           transition-colors;
+  }
+
+  .mono-tag {
+    @apply inline-flex items-center px-2 py-0.5 text-[11px] font-mono font-medium
+           border border-border bg-slate-50 text-slate-700
+           dark:bg-slate-800/80 dark:text-slate-200 rounded-sm;
+  }
+}
+
+/* Harmonize legacy neutral utility classes cleanly in Dark Mode across all pages & modals */
+.dark .bg-zinc-50,
+.dark .bg-zinc-50\/70,
+.dark .bg-zinc-50\/80,
+.dark .bg-zinc-50\/90 {
+  background-color: rgb(15 23 42 / 0.85) !important;
+}
+
+.dark .bg-zinc-100,
+.dark .bg-zinc-100\/70 {
+  background-color: rgb(30 41 59 / 0.75) !important;
+}
+
+.dark .hover\:bg-zinc-50:hover,
+.dark .hover\:bg-zinc-100:hover {
+  background-color: rgb(30 41 59 / 0.9) !important;
+}
+
+.dark .text-zinc-700,
+.dark .text-zinc-600 {
+  color: rgb(203 213 225) !important;
+}
+
+.dark .text-zinc-500,
+.dark .text-zinc-400 {
+  color: rgb(148 163 184) !important;
+}
+
+.dark .bg-red-50 {
+  background-color: rgb(69 10 10 / 0.6) !important;
+}
+
+.dark .border-red-300 {
+  border-color: rgb(185 28 28 / 0.7) !important;
+}
+
+.dark .text-red-700,
+.dark .text-red-600 {
+  color: rgb(252 165 165) !important;
+}
+
+.dark .bg-ink {
+  background-color: rgb(37 99 235) !important;
+}
+
+.dark .border-ink {
+  border-color: rgb(59 130 246) !important;
+}

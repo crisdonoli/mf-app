@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "db_name": "mining-fomc-app-db",
+  "version": "1.0.0",
+  "tag": "v1.0.0",
+  "fingerprint": "262307567b96fee9",
+  "generated_at": "2026-11-24T11:21:05Z",
+  "horizon_years": [
+    1976,
+    2020
+  ],
+  "total_indexed_chunks": 477475,
+  "total_files": 1334,
+  "total_bytes": 175532839,
+  "total_human_size": "167.40 MB",
+  "notes": "Compact FOMC 1976-2020 database (float32 ZSTD, chunk-pooled similarities, partitioned zero-shot labels & relevance).",
+  "sections": {
+    "text_metadata": {
+      "files": 428,
+      "bytes": 92075561,
+      "human_size": "87.81 MB"
+    },
+    "agenda_items": {
+      "files": 45,
+      "bytes": 197060,
+      "human_size": "192.44 KB"
+    },
+    "speeches.parquet": {
+      "files": 1,
+      "bytes": 9297645,
+      "human_size": "8.87 MB"
+    },
+    "similarities": {
+      "files": 428,
+      "bytes": 32024475,
+      "human_size": "30.54 MB"
+    },
+    "labels": {
+      "files": 384,
+      "bytes": 74903881,
+      "human_size": "71.43 MB"
+    },
+    "relevance": {
+      "files": 1,
+      "bytes": 990923,
+      "human_size": "967.70 KB"
+    },
+    "participants.parquet": {
+      "files": 1,
+      "bytes": 27740,
+      "human_size": "27.09 KB"
+    },
+    "participants": {
+      "files": 45,
+      "bytes": 491495,
+      "human_size": "479.98 KB"
+    },
+    "taxonomy.json": {
+      "files": 1,
+      "bytes": 2172,
+      "human_size": "2.12 KB"
+    }
+  }
+}

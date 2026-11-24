@@ -1,0 +1,79 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: miningfomc-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-miningfomc}
+      POSTGRES_USER: ${POSTGRES_USER:-miningfomc}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    volumes:
+      - miningfomc_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-miningfomc} -d ${POSTGRES_DB:-miningfomc}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      target: prod
+    container_name: miningfomc-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      ENVIRONMENT: production
+      DATA_DIR: /fomc-data
+      FOMC_SIMILARITIES_DIR: /fomc-similarities
+      FOMC_LABELS_DIR: /fomc-labels
+      FOMC_RELEVANCE_DIR: /fomc-relevance
+      CORRECTIONS_DIR: /fomc-corrections
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-miningfomc}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-miningfomc}
+      CORS_ORIGINS: https://miningfomc.com,https://www.miningfomc.com
+      DUCKDB_MEMORY_LIMIT: ${DUCKDB_MEMORY_LIMIT:-1GB}
+      DUCKDB_THREADS: ${DUCKDB_THREADS:-4}
+    volumes:
+      - ${HOST_FOMC_DATA_DIR:-./fomc-data}:/fomc-data:ro
+      - ${HOST_SIMILARITIES_DIR:-./fomc-data/similarities/model=bge-m3/pooling=chunk}:/fomc-similarities:ro
+      - ${HOST_LABELS_DIR:-./fomc-data/labels/zero_shot}:/fomc-labels:ro
+      - ${HOST_RELEVANCE_DIR:-./fomc-data/relevance/model}:/fomc-relevance:ro
+      - ./fomc-data/corrections:/fomc-corrections:rw
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      target: prod
+      args:
+        VITE_API_BASE_URL: ""
+    container_name: miningfomc-frontend
+    restart: unless-stopped
+    expose:
+      - "80"
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: miningfomc-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+      - frontend
+
+volumes:
+  miningfomc_pgdata:
+  caddy_data:
+  caddy_config:

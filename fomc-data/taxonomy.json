@@ -1,0 +1,47 @@
+{
+  "labels": [
+    "growth",
+    "gdp_activity",
+    "monetary_policy",
+    "financial_conditions",
+    "inflation",
+    "operations",
+    "communication",
+    "labor_market",
+    "fx_international",
+    "discourse",
+    "fiscal",
+    "procedural",
+    "irrelevant"
+  ],
+  "subclasses": {
+    "growth": ["consumption", "business_investment", "housing", "industrial_production"],
+    "gdp_activity": ["gdp_output", "productivity", "monetary_aggregates"],
+    "monetary_policy": ["policy_stance", "rate_decision", "policy_framework", "policy_strategy"],
+    "financial_conditions": ["market_conditions", "financial_stability", "market_functioning", "banking_stress"],
+    "inflation": ["inflation_outlook", "inflation_expectations", "wage_inflation"],
+    "operations": ["reserves", "open_market_operations", "balance_sheet", "liquidity_facilities"],
+    "communication": ["statement_wording", "press_guidance", "forward_guidance"],
+    "labor_market": [],
+    "fx_international": [],
+    "discourse": [],
+    "fiscal": [],
+    "procedural": [],
+    "irrelevant": []
+  },
+  "descriptions": {
+    "growth": "Real activity, output, consumption, investment and the economic outlook.",
+    "gdp_activity": "Aggregate GDP/GNP growth, productivity and monetary aggregates recovered from the growth bucket.",
+    "monetary_policy": "Policy stance, interest-rate decisions and the policy framework.",
+    "financial_conditions": "Asset prices, credit, market stress and financial stability.",
+    "inflation": "Price developments, inflation expectations and wage pressures.",
+    "operations": "Open market operations, reserves and the balance sheet.",
+    "communication": "Statement wording, forward guidance and public messaging.",
+    "labor_market": "Employment, unemployment, wages and labor-market slack.",
+    "fx_international": "Exchange rates, foreign economies and international finance.",
+    "discourse": "Conversational scaffolding with no economic content.",
+    "fiscal": "Taxes, government spending, deficits and fiscal policy.",
+    "procedural": "Meeting mechanics, votes, attendance and records.",
+    "irrelevant": "Off-topic talk unrelated to policy."
+  }
+}
