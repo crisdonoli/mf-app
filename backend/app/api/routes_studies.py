@@ -13,19 +13,19 @@ router = APIRouter(prefix="/api/studies", tags=["Studies & Community"])
 
 @router.get("/portfolio")
 def list_portfolio(user_id: int = Depends(get_current_user_id)):
-    """List all studies created or forked by the authenticated user."""
+    """List all studies, saved Explorer searches, and histories owned by the user."""
     return {"items": get_repository().list_portfolio_studies(user_id)}
 
 
 @router.get("/community")
 def list_community(_user: dict = Depends(get_current_user)):
-    """List all public studies with full fork lineage links."""
+    """List all public studies and saved research queries with full fork lineage links."""
     return {"items": get_repository().list_community_studies()}
 
 
 @router.get("/{study_id}")
 def get_study(study_id: int, user_id: int = Depends(get_current_user_id)):
-    """Fetch a single study if it is public or owned by the authenticated user."""
+    """Fetch a single portfolio item if it is public or owned by the authenticated user."""
     study = get_repository().get_study(study_id)
     if not study or (not study["is_public"] and study["owner_id"] != user_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Study not found")
@@ -34,13 +34,14 @@ def get_study(study_id: int, user_id: int = Depends(get_current_user_id)):
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 def create_study(body: StudyCreateRequest, user_id: int = Depends(get_current_user_id)):
-    """Save a new Comparator study into the user's Portfolio."""
+    """Save a Comparator study, Explorer search parameters, or History bundle into Portfolio."""
     return get_repository().create_study(
         owner_id=user_id,
         title=body.title,
         description=body.description,
         config=body.config,
         is_public=body.is_public,
+        study_type=body.study_type,
     )
 
 
@@ -48,7 +49,7 @@ def create_study(body: StudyCreateRequest, user_id: int = Depends(get_current_us
 def update_study(
     study_id: int, body: StudyUpdateRequest, user_id: int = Depends(get_current_user_id)
 ):
-    """Update an owned study's metadata, visibility, or Comparator snapshot."""
+    """Update an owned portfolio item's metadata, visibility, or parameter config."""
     updated = get_repository().update_study(
         user_id,
         study_id,
@@ -56,6 +57,7 @@ def update_study(
         description=body.description,
         config=body.config,
         is_public=body.is_public,
+        study_type=body.study_type,
     )
     if not updated:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Study not found")
@@ -64,7 +66,7 @@ def update_study(
 
 @router.delete("/{study_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_study(study_id: int, user_id: int = Depends(get_current_user_id)):
-    """Delete an owned study from the user's Portfolio."""
+    """Delete an owned item from the user's Portfolio."""
     if not get_repository().delete_study(user_id, study_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Study not found")
     return None
@@ -76,7 +78,7 @@ def fork_study(
     body: StudyForkRequest,
     user_id: int = Depends(get_current_user_id),
 ):
-    """Fork a public study into the current user's Portfolio with preserved lineage."""
+    """Fork a public portfolio item into the current user's Portfolio with preserved lineage."""
     forked = get_repository().fork_study(
         user_id,
         study_id,

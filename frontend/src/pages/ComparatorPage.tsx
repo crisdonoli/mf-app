@@ -15,11 +15,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
+  AlertCircle,
   ChevronLeft,
   ChevronRight,
   Download,
   GitBranch,
   GitFork,
+  Layers,
   ListPlus,
   Plus,
   RotateCcw,
@@ -33,6 +35,12 @@ import {
 } from "lucide-react";
 import { EChartBox } from "../components/EChartBox";
 import { GroupingTreeModal } from "../components/GroupingTreeModal";
+import { MultiDocTypeSelect } from "../components/MultiDocTypeSelect";
+import {
+  EMPTY_SCORE_THRESHOLD_FILTER,
+  ScoreThresholdFilter,
+  type ScoreThresholdFilterValue,
+} from "../components/ScoreThresholdFilter";
 import {
   SliceInspectorDrawer,
   type SliceInspectorTarget,
@@ -78,16 +86,15 @@ export const ComparatorPage: React.FC = () => {
   const [docTypes, setDocTypes] = useState<DocTypeOption[]>([]);
   const [macroCategories, setMacroCategories] = useState<MacroCategoryItem[]>([]);
 
-  // Basket search filters (Unified Date Range <= 2020, Speaker Autocomplete, uncapped Add All)
-  const [searchDocType, setSearchDocType] = useState("");
+  // Basket search filters (Multi-select Document Type, Unified Date Range <= 2020, Speaker, Extended Score Thresholds)
+  const [searchDocTypes, setSearchDocTypes] = useState<string[]>([]);
   const [searchDateFrom, setSearchDateFrom] = useState("");
   const [searchDateTo, setSearchDateTo] = useState("");
   const [searchSpeaker, setSearchSpeaker] = useState("");
   const [searchText, setSearchText] = useState("");
-  const [filterCategory, setFilterCategory] = useState("");
-  const [filterMetric, setFilterMetric] = useState<MetricTransform>("cosine");
-  const [filterNorm, setFilterNorm] = useState<NormalizationMode>("none");
-  const [filterMinScore, setFilterMinScore] = useState("");
+  const [scoreFilter, setScoreFilter] = useState<ScoreThresholdFilterValue>(
+    EMPTY_SCORE_THRESHOLD_FILTER
+  );
   const [candidates, setCandidates] = useState<SearchDocumentItem[]>([]);
   const [candidatesTotal, setCandidatesTotal] = useState<number>(0);
   const [searching, setSearching] = useState(false);
@@ -111,6 +118,7 @@ export const ComparatorPage: React.FC = () => {
   const [activeTopicIds, setActiveTopicIds] = useState<string[]>([]);
   const [hiddenCohortIds, setHiddenCohortIds] = useState<string[]>([]);
   const [zoomWindow, setZoomWindow] = useState<[number, number]>([0, 100]);
+  const [showSplitsManual, setShowSplitsManual] = useState<boolean>(false);
 
   // Deep Drill-Down Slice & Subgroup Inspector Drawer
   const [inspectorTarget, setInspectorTarget] = useState<SliceInspectorTarget | null>(null);
@@ -171,17 +179,27 @@ export const ComparatorPage: React.FC = () => {
     const effFrom = clampCorpusDate(searchDateFrom);
     const effTo = clampCorpusDate(searchDateTo);
     return {
-      doc_type: searchDocType || undefined,
+      doc_types: searchDocTypes.length > 0 ? searchDocTypes : undefined,
       date_from: effFrom || undefined,
       date_to: effTo || undefined,
       speaker: searchSpeaker || undefined,
       query_text: searchText || undefined,
-      filter_category: filterCategory || undefined,
-      filter_metric: filterCategory ? filterMetric : undefined,
-      filter_normalization: filterCategory ? filterNorm : undefined,
+      filter_category: scoreFilter.filterCategory || undefined,
+      filter_metric: scoreFilter.filterCategory ? scoreFilter.filterMetric : undefined,
+      filter_normalization: scoreFilter.filterCategory ? scoreFilter.filterNorm : undefined,
       filter_min_score:
-        filterCategory && filterMinScore.trim() !== ""
-          ? Number(filterMinScore)
+        scoreFilter.filterCategory && scoreFilter.filterMinScore.trim() !== ""
+          ? Number(scoreFilter.filterMinScore)
+          : undefined,
+      filter_zs_category: scoreFilter.filterZsCategory || undefined,
+      filter_zs_min_prob:
+        scoreFilter.filterZsCategory && scoreFilter.filterZsMinProb.trim() !== ""
+          ? Number(scoreFilter.filterZsMinProb)
+          : undefined,
+      filter_rel_class: scoreFilter.filterRelClass || undefined,
+      filter_rel_min_prob:
+        scoreFilter.filterRelClass && scoreFilter.filterRelMinProb.trim() !== ""
+          ? Number(scoreFilter.filterRelMinProb)
           : undefined,
       limit,
       offset: 0,
@@ -297,47 +315,102 @@ export const ComparatorPage: React.FC = () => {
 
   const activeRadarTick = resolvedTimeSeries.ticks[safeRadarTickIdx] || null;
 
-  // 1. Synchronized Radar Chart Option (plots all visible cohorts at the active chronological tick)
-  const radarOption = useMemo(() => {
-    if (!comparison || comparison.categories.length === 0 || resolvedTimeSeries.cohorts.length === 0) {
-      return {};
+  // 1. Fixed Radar Chart: displays EVERY selected document or group in Comparator.
+  // If > 10 items are selected, auto-groups by year and triggers an informative UI banner.
+  const radarSummary = useMemo<{
+    option: Record<string, unknown>;
+    autoGroupedByYear: boolean;
+    originalCount: number;
+    plottedCount: number;
+  }>(() => {
+    if (!comparison || comparison.categories.length === 0) {
+      return { option: {}, autoGroupedByYear: false, originalCount: 0, plottedCount: 0 };
     }
 
-    const visibleCohorts = resolvedTimeSeries.cohorts.filter(
-      (c) => !hiddenCohortIds.includes(c.cohort_id)
+    const availableSeries = (comparison.series || []).filter(
+      (s) => s.available && Array.isArray(s.partitions) && s.partitions.length > 0
     );
-    const plotted: { name: string; value: number[]; color: string }[] = [];
+    if (availableSeries.length === 0) {
+      return { option: {}, autoGroupedByYear: false, originalCount: 0, plottedCount: 0 };
+    }
+
+    const nCats = comparison.categories.length;
+    const rawTraces = availableSeries.map((s) => {
+      // Average across partitions for each document/group so the radar reflects the full item profile
+      const avgVals = new Array<number>(nCats).fill(0);
+      for (let c = 0; c < nCats; c++) {
+        let sum = 0;
+        let cnt = 0;
+        for (const p of s.partitions) {
+          const v = p.values?.[c];
+          if (typeof v === "number" && Number.isFinite(v)) {
+            sum += v;
+            cnt += 1;
+          }
+        }
+        avgVals[c] = cnt > 0 ? sum / cnt : 0;
+      }
+      const isTreeLeaf = s.doc_type === "tree_leaf";
+      const label = isTreeLeaf
+        ? s.meeting_date
+        : `${s.meeting_date} · ${s.doc_type_label || s.doc_type}`;
+      const yearMatch = String(s.meeting_date || "").match(/(19\d{2}|20\d{2})/);
+      const yearKey = yearMatch ? yearMatch[1] : s.meeting_date || "Other";
+      return {
+        label,
+        yearKey,
+        values: avgVals,
+      };
+    });
+
+    const originalCount = rawTraces.length;
+    const autoGroupedByYear = originalCount > 10;
+
+    let finalTraces: Array<{ name: string; value: number[] }> = [];
+    if (autoGroupedByYear) {
+      const byYear = new Map<string, number[][]>();
+      for (const tr of rawTraces) {
+        const list = byYear.get(tr.yearKey) || [];
+        list.push(tr.values);
+        byYear.set(tr.yearKey, list);
+      }
+      const sortedYears = Array.from(byYear.keys()).sort();
+      finalTraces = sortedYears.map((yr) => {
+        const vecs = byYear.get(yr) || [];
+        const meanVec = new Array<number>(nCats).fill(0);
+        for (let c = 0; c < nCats; c++) {
+          let sum = 0;
+          for (const v of vecs) sum += v[c] ?? 0;
+          meanVec[c] = vecs.length > 0 ? sum / vecs.length : 0;
+        }
+        return {
+          name: `${yr} (${vecs.length} ${vecs.length === 1 ? "item" : "items"})`,
+          value: meanVec,
+        };
+      });
+    } else {
+      finalTraces = rawTraces.map((tr) => ({ name: tr.label, value: tr.values }));
+    }
+
     let globalMax = 0.01;
     let globalMin = 0;
-
-    visibleCohorts.forEach((cohort, cIdx) => {
-      const vals = comparison.categories.map((_, catIdx) => {
-        const v = cohort.values_by_topic[catIdx]?.[safeRadarTickIdx];
-        return typeof v === "number" ? v : 0;
-      });
-      const hasData = comparison.categories.some(
-        (_, catIdx) => typeof cohort.values_by_topic[catIdx]?.[safeRadarTickIdx] === "number"
-      );
-      if (!hasData) return;
-
-      vals.forEach((v) => {
+    const plotted = finalTraces.map((tr, idx) => {
+      tr.value.forEach((v) => {
         if (v > globalMax) globalMax = v;
         if (v < globalMin) globalMin = v;
       });
-
-      const color = DOCUMENT_COLORS[cIdx % DOCUMENT_COLORS.length];
-      plotted.push({
-        name: activeRadarTick ? `${cohort.label} (${activeRadarTick.full_label})` : cohort.label,
-        value: vals,
-        color,
-      });
+      return {
+        name: tr.name,
+        value: tr.value,
+        color: DOCUMENT_COLORS[idx % DOCUMENT_COLORS.length],
+      };
     });
 
     const axisMax = Number((globalMax * 1.1).toFixed(3));
     const axisMin = globalMin < 0 ? Number((globalMin * 1.1).toFixed(3)) : 0;
     const catLabels = comparison.categories.map((c) => c.label);
 
-    return {
+    const option = {
       tooltip: {
         trigger: "item",
         formatter: (params: { name: string; value: number[]; color: string }) => {
@@ -360,7 +433,7 @@ export const ComparatorPage: React.FC = () => {
       },
       legend: {
         bottom: 0,
-        type: "plain",
+        type: "scroll",
         orient: "horizontal",
         left: "center",
         itemGap: 12,
@@ -368,7 +441,7 @@ export const ComparatorPage: React.FC = () => {
       },
       radar: {
         radius: "62%",
-        center: ["50%", "45%"],
+        center: ["50%", "44%"],
         splitNumber: 4,
         axisName: { color: isDark ? "#E2E8F0" : "#0F172A", fontFamily: "JetBrains Mono", fontSize: 11 },
         splitLine: { lineStyle: { color: isDark ? "#334155" : "#E2E8F0" } },
@@ -390,72 +463,215 @@ export const ComparatorPage: React.FC = () => {
             value: s.value,
             itemStyle: { color: s.color },
             lineStyle: { color: s.color, width: 2.2 },
-            areaStyle: { color: s.color, opacity: 0.12 },
+            areaStyle: { color: s.color, opacity: 0.1 },
           })),
         },
       ],
     };
-  }, [comparison, resolvedTimeSeries.cohorts, hiddenCohortIds, safeRadarTickIdx, activeRadarTick, isDark]);
 
-  // 3-Level Hierarchical Semantic Zoom Granularity: MACRO (Year) -> MESO (Month/Meeting) -> MICRO (Slices)
-  const zoomGranularity = useMemo<"macro" | "meso" | "micro">(() => {
-    const ticks = resolvedTimeSeries.ticks;
-    if (ticks.length === 0) return "micro";
-    const startIdx = Math.floor((zoomWindow[0] / 100) * Math.max(0, ticks.length - 1));
-    const endIdx = Math.ceil((zoomWindow[1] / 100) * Math.max(0, ticks.length - 1));
-    const visible = ticks.slice(startIdx, endIdx + 1);
-    const visibleCount = visible.length;
-    const distinctYears = new Set(visible.map((t) => t.year)).size;
-    const distinctPeriods = new Set(visible.map((t) => t.period_key)).size;
-    const hasSlices = visible.some((t) => t.total_slices > 1);
+    return {
+      option,
+      autoGroupedByYear,
+      originalCount,
+      plottedCount: plotted.length,
+    };
+  }, [comparison, isDark]);
 
-    if (distinctYears >= 4 || visibleCount > 48) return "macro";
-    if (distinctPeriods > 3 || (visibleCount > 18 && hasSlices)) return "meso";
-    return "micro";
-  }, [resolvedTimeSeries.ticks, zoomWindow]);
-
-  // 2. Chronologically Flattened Time-Series Option (ONE continuous curve per Cohort x Topic)
-  const timeSeriesOption = useMemo(() => {
+  // Compute Meeting-Averaged Timeline (used by default when Splits are NOT expanded)
+  const averagedTimeSeries = useMemo<{
+    ticks: TimeTickMeta[];
+    cohorts: OrderedTimeSeriesCohort[];
+  }>(() => {
     const { ticks, cohorts } = resolvedTimeSeries;
+    if (ticks.length === 0 || cohorts.length === 0) return { ticks: [], cohorts: [] };
+
+    const periodOrder: string[] = [];
+    const periodTickIndices = new Map<string, number[]>();
+    ticks.forEach((tk, idx) => {
+      const pk = tk.period_key || tk.meeting_date;
+      if (!periodTickIndices.has(pk)) {
+        periodOrder.push(pk);
+        periodTickIndices.set(pk, []);
+      }
+      periodTickIndices.get(pk)!.push(idx);
+    });
+
+    const avgTicks: TimeTickMeta[] = periodOrder.map((pk, pIdx) => {
+      const idxs = periodTickIndices.get(pk)!;
+      const first = ticks[idxs[0]];
+      return {
+        ...first,
+        index: pIdx,
+        slice_num: 1,
+        slice_index: 1,
+        total_slices: 1,
+        full_label:
+          first.total_slices > 1
+            ? `${first.period_label} (Avg of ${first.total_slices} splits)`
+            : first.period_label,
+      };
+    });
+
+    const avgCohorts: OrderedTimeSeriesCohort[] = cohorts.map((cohort) => {
+      const nTopics = cohort.values_by_topic.length;
+      const avgValuesByTopic: (number | null)[][] = Array.from({ length: nTopics }, () =>
+        new Array<number | null>(periodOrder.length).fill(null)
+      );
+      const avgTickMeta = periodOrder.map((pk) => {
+        const idxs = periodTickIndices.get(pk)!;
+        const firstMeta = idxs.map((i) => cohort.tick_meta[i]).find(Boolean) || null;
+        if (!firstMeta) return null;
+        const totalChunks = idxs.reduce(
+          (acc, i) => acc + (cohort.tick_meta[i]?.chunk_count || 0),
+          0
+        );
+        return {
+          ...firstMeta,
+          slice_index: 0,
+          n_partitions: 1,
+          chunk_count: totalChunks,
+        };
+      });
+
+      periodOrder.forEach((pk, pIdx) => {
+        const idxs = periodTickIndices.get(pk)!;
+        for (let t = 0; t < nTopics; t++) {
+          let sum = 0;
+          let cnt = 0;
+          for (const rawIdx of idxs) {
+            const v = cohort.values_by_topic[t]?.[rawIdx];
+            if (typeof v === "number" && Number.isFinite(v)) {
+              sum += v;
+              cnt += 1;
+            }
+          }
+          avgValuesByTopic[t][pIdx] = cnt > 0 ? sum / cnt : null;
+        }
+      });
+
+      return {
+        cohort_id: cohort.cohort_id,
+        label: cohort.label,
+        values_by_topic: avgValuesByTopic,
+        tick_meta: avgTickMeta,
+      };
+    });
+
+    return { ticks: avgTicks, cohorts: avgCohorts };
+  }, [resolvedTimeSeries]);
+
+  const hasMultipleSplits = useMemo(
+    () => nPartitions > 1 && resolvedTimeSeries.ticks.some((t) => t.total_slices > 1),
+    [nPartitions, resolvedTimeSeries.ticks]
+  );
+
+  // Determine semantic zoom granularity & whether atomic meeting scale has been reached
+  const { zoomGranularity, isAtomicMeetingZoom } = useMemo<{
+    zoomGranularity: "macro" | "meso" | "micro";
+    isAtomicMeetingZoom: boolean;
+  }>(() => {
+    const baseTicks = averagedTimeSeries.ticks;
+    if (baseTicks.length === 0) {
+      return { zoomGranularity: "micro", isAtomicMeetingZoom: true };
+    }
+    const startIdx = Math.floor((zoomWindow[0] / 100) * Math.max(0, baseTicks.length - 1));
+    const endIdx = Math.ceil((zoomWindow[1] / 100) * Math.max(0, baseTicks.length - 1));
+    const visible = baseTicks.slice(startIdx, endIdx + 1);
+    const distinctYears = new Set(visible.map((t) => t.year)).size;
+    const distinctPeriods = visible.length;
+
+    const atomic = distinctPeriods <= 2;
+    if (atomic) return { zoomGranularity: "micro", isAtomicMeetingZoom: true };
+    if (distinctYears >= 4 || distinctPeriods > 24) {
+      return { zoomGranularity: "macro", isAtomicMeetingZoom: false };
+    }
+    return { zoomGranularity: "meso", isAtomicMeetingZoom: false };
+  }, [averagedTimeSeries.ticks, zoomWindow]);
+
+  const splitsVisible = hasMultipleSplits && (showSplitsManual || isAtomicMeetingZoom);
+
+  // Active dataset displayed on the Time-Series chart (averaged by meeting OR expanded splits)
+  const displayedTimeSeries = useMemo(
+    () => (splitsVisible ? resolvedTimeSeries : averagedTimeSeries),
+    [splitsVisible, resolvedTimeSeries, averagedTimeSeries]
+  );
+
+  // 2. Chronologically Flattened Time-Series Option with Semantic Zoom, Splits Toggle & Meeting Visual Regions
+  const timeSeriesOption = useMemo(() => {
+    const { ticks, cohorts } = displayedTimeSeries;
     if (!comparison || ticks.length === 0 || cohorts.length === 0) return {};
 
     const visibleCohorts = cohorts.filter((c) => !hiddenCohortIds.includes(c.cohort_id));
     const activeTopicSet = new Set(activeTopicIds);
 
-    // Format X-axis labels cleanly according to the 3 semantic zoom levels
     const xAxisLabels = ticks.map((t, idx) => {
+      if (splitsVisible) {
+        if (t.slice_num === 1 || idx === 0 || ticks[idx - 1].period_key !== t.period_key) {
+          return `${t.period_label}
+S${t.slice_num}`;
+        }
+        return `S${t.slice_num}`;
+      }
       if (zoomGranularity === "macro") {
-        // Level 1: Years only at the start of each year
         if (idx === 0 || ticks[idx - 1].year !== t.year) {
           return String(t.year);
         }
         return "";
       }
-      if (zoomGranularity === "meso") {
-        // Level 2: Year + Month / Meeting Date / Period at start of each period
-        if (idx === 0 || ticks[idx - 1].period_key !== t.period_key) {
-          return t.period_label;
-        }
-        return "";
-      }
-      // Level 3 (Micro): Individual Slices with parent period header on Slice 1
-      if (t.total_slices > 1) {
-        if (t.slice_num === 1 || idx === 0 || ticks[idx - 1].period_key !== t.period_key) {
-          return `${t.period_label}\nSlice ${t.slice_num}`;
-        }
-        return `Slice ${t.slice_num}`;
-      }
       return t.period_label;
     });
 
-    // Subtle vertical dividers between meetings/periods in Micro zoom mode
+    // Visual meeting regions (alternating shaded bands + vertical delimiters) when splits are displayed
     const periodDividers: Array<{ xAxis: number }> = [];
-    if (zoomGranularity === "micro") {
-      ticks.forEach((t, idx) => {
-        if (idx > 0 && ticks[idx - 1].period_key !== t.period_key) {
-          periodDividers.push({ xAxis: idx });
+    const meetingRegions: Array<
+      [
+        {
+          name: string;
+          xAxis: number;
+          itemStyle: { color: string };
+          label: { show: boolean; position: string; fontSize: number; fontFamily: string; color: string };
+        },
+        { xAxis: number }
+      ]
+    > = [];
+
+    if (splitsVisible) {
+      let regionStart = 0;
+      let regionIndex = 0;
+      for (let i = 0; i <= ticks.length; i++) {
+        const boundary =
+          i === ticks.length || (i > 0 && ticks[i].period_key !== ticks[i - 1].period_key);
+        if (boundary && i > regionStart) {
+          if (regionStart > 0) {
+            periodDividers.push({ xAxis: regionStart });
+          }
+          const isEven = regionIndex % 2 === 0;
+          const bandColor = isDark
+            ? isEven
+              ? "rgba(59, 130, 246, 0.11)"
+              : "rgba(148, 163, 184, 0.05)"
+            : isEven
+            ? "rgba(37, 99, 235, 0.065)"
+            : "rgba(148, 163, 184, 0.03)";
+          meetingRegions.push([
+            {
+              name: ticks[regionStart].period_label,
+              xAxis: regionStart,
+              itemStyle: { color: bandColor },
+              label: {
+                show: true,
+                position: "insideTop",
+                fontSize: 9,
+                fontFamily: "JetBrains Mono, monospace",
+                color: isDark ? "#94A3B8" : "#475569",
+              },
+            },
+            { xAxis: i - 1 },
+          ]);
+          regionStart = i;
+          regionIndex += 1;
         }
-      });
+      }
     }
 
     const seriesLines: Record<string, unknown>[] = [];
@@ -463,7 +679,7 @@ export const ComparatorPage: React.FC = () => {
 
     comparison.categories.forEach((cat, catIdx) => {
       if (!activeTopicSet.has(cat.id)) return;
-      visibleCohorts.forEach((cohort, cLocalIdx) => {
+      visibleCohorts.forEach((cohort) => {
         const seriesName =
           visibleCohorts.length === 1 ? cat.label : `${cohort.label} · ${cat.label}`;
         const color = DOCUMENT_COLORS[colorIdx % DOCUMENT_COLORS.length];
@@ -488,14 +704,22 @@ export const ComparatorPage: React.FC = () => {
             lineStyle: { opacity: 0.14 },
             itemStyle: { opacity: 0.14 },
           },
-          ...(isFirstSeries && periodDividers.length > 0
+          ...(isFirstSeries && splitsVisible
             ? {
                 markLine: {
                   silent: true,
                   symbol: ["none", "none"],
                   label: { show: false },
-                  lineStyle: { color: "#D4D4D8", type: "dashed", width: 1 },
+                  lineStyle: {
+                    color: isDark ? "#475569" : "#94A3B8",
+                    type: "dashed",
+                    width: 1.2,
+                  },
                   data: periodDividers,
+                },
+                markArea: {
+                  silent: true,
+                  data: meetingRegions,
                 },
               }
             : {}),
@@ -507,7 +731,6 @@ export const ComparatorPage: React.FC = () => {
             _tickIndex: tIdx,
           })),
         });
-        void cLocalIdx;
       });
     });
 
@@ -527,9 +750,9 @@ export const ComparatorPage: React.FC = () => {
           const tIdx = p.data?._tickIndex ?? 0;
           const tk = ticks[tIdx];
           const hierarchy = tk
-            ? `${tk.year} · ${tk.period_label}${
-                tk.total_slices > 1 ? ` · Slice ${tk.slice_num}/${tk.total_slices}` : ""
-              }`
+            ? splitsVisible && tk.total_slices > 1
+              ? `${tk.year} · ${tk.period_label} · Split ${tk.slice_num}/${tk.total_slices}`
+              : `${tk.year} · ${tk.full_label}`
             : "";
           return `<div style="font-family:JetBrains Mono,monospace;font-size:11px;min-width:230px;">
             <div style="font-weight:700;margin-bottom:4px;border-bottom:1px solid #E4E4E7;padding-bottom:3px;">
@@ -543,7 +766,7 @@ export const ComparatorPage: React.FC = () => {
           </div>`;
         },
       },
-      grid: { top: 20, left: 54, right: 24, bottom: zoomGranularity === "micro" ? 84 : 72 },
+      grid: { top: splitsVisible ? 30 : 20, left: 54, right: 24, bottom: splitsVisible ? 86 : 72 },
       xAxis: {
         type: "category",
         data: xAxisLabels,
@@ -586,10 +809,11 @@ export const ComparatorPage: React.FC = () => {
     };
   }, [
     comparison,
-    resolvedTimeSeries,
+    displayedTimeSeries,
     activeTopicIds,
     hiddenCohortIds,
     zoomGranularity,
+    splitsVisible,
     zoomWindow,
     isDark,
   ]);
@@ -600,24 +824,21 @@ export const ComparatorPage: React.FC = () => {
         | { _cohortId?: string; _cohortLabel?: string; _tickIndex?: number }
         | undefined;
       if (!dataObj || typeof dataObj._tickIndex !== "number") return;
-      const cohort = resolvedTimeSeries.cohorts.find((c) => c.cohort_id === dataObj._cohortId);
-      const tk = resolvedTimeSeries.ticks[dataObj._tickIndex];
+      const cohort = displayedTimeSeries.cohorts.find((c) => c.cohort_id === dataObj._cohortId);
+      const tk = displayedTimeSeries.ticks[dataObj._tickIndex];
       const meta = cohort?.tick_meta[dataObj._tickIndex];
       if (!meta || !tk) return;
-
-      // Also sync Radar scrubber to the clicked chronological point
-      setRadarTickIdx(dataObj._tickIndex);
 
       setInspectorTarget({
         title: `${cohort?.label || "Cohort"} → ${tk.full_label}`,
         documents: meta.documents,
         pathFilters: meta.path_filters,
         periodKey: meta.period_key,
-        sliceIndex: meta.slice_index,
+        sliceIndex: meta.slice_index && meta.slice_index > 0 ? meta.slice_index : null,
         nPartitions: meta.n_partitions,
       });
     },
-    [resolvedTimeSeries]
+    [displayedTimeSeries]
   );
 
   const handleDataZoom = useCallback((startPct: number, endPct: number) => {
@@ -797,22 +1018,27 @@ export const ComparatorPage: React.FC = () => {
     );
   };
 
+  const nodeSplitsCount = Object.keys(groupingTree?.node_splits || {}).length;
   const treeSummaryLabel = groupingTree
-    ? groupingTree.split_levels
+    ? (groupingTree.split_levels
         .map((l) =>
           l.criterion === "year_range"
             ? `Year Range (${l.year_range_span}y)`
+            : l.criterion === "custom_range"
+            ? `Custom Range (${l.custom_ranges?.length || 0})`
             : l.criterion.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase())
         )
-        .join(" → ") || "Root Cohort"
+        .join(" → ") || "Root Cohort") +
+      (nodeSplitsCount > 0 ? ` · +${nodeSplitsCount} node ${nodeSplitsCount === 1 ? "split" : "splits"}` : "")
     : null;
 
-  const zoomBadgeLabel =
-    zoomGranularity === "macro"
-      ? "MACRO · YEARS"
-      : zoomGranularity === "meso"
-      ? "MESO · MONTHS / MEETINGS"
-      : "MICRO · INTRA-PERIOD SLICES";
+  const zoomBadgeLabel = splitsVisible
+    ? showSplitsManual
+      ? "SPLITS · MANUAL VIEW (MEETING REGIONS)"
+      : "ATOMIC ZOOM · INDIVIDUAL SPLITS"
+    : zoomGranularity === "macro"
+    ? "MACRO · MEETING AVERAGES (YEARS)"
+    : "MESO · MEETING AVERAGES";
 
   return (
     <div className="space-y-6">
@@ -966,18 +1192,13 @@ export const ComparatorPage: React.FC = () => {
               }}
               className="space-y-2.5"
             >
-              <select
-                value={searchDocType}
-                onChange={(e) => setSearchDocType(e.target.value)}
-                className="input-field text-xs"
-              >
-                <option value="">All Document Types</option>
-                {docTypes.map((dt) => (
-                  <option key={dt.id} value={dt.id}>
-                    {dt.label}
-                  </option>
-                ))}
-              </select>
+              <MultiDocTypeSelect
+                options={docTypes}
+                selected={searchDocTypes}
+                onChange={setSearchDocTypes}
+                placeholder="All Document Types"
+                compact
+              />
 
               <div className="space-y-1">
                 <div className="grid grid-cols-2 gap-2">
@@ -1029,52 +1250,13 @@ export const ComparatorPage: React.FC = () => {
                 />
               </div>
 
-              <div className="pt-2 border-t border-border space-y-1.5">
-                <div className="text-[10px] font-mono uppercase text-muted">
-                  Score Threshold Filter (Optional)
-                </div>
-                <select
-                  value={filterCategory}
-                  onChange={(e) => setFilterCategory(e.target.value)}
-                  className="input-field text-xs"
-                >
-                  <option value="">No Topic Score Filter</option>
-                  {macroCategories.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.label}
-                    </option>
-                  ))}
-                </select>
-                {filterCategory && (
-                  <div className="grid grid-cols-3 gap-1.5">
-                    <select
-                      value={filterMetric}
-                      onChange={(e) => setFilterMetric(e.target.value as MetricTransform)}
-                      className="input-field text-[11px] font-mono"
-                    >
-                      <option value="cosine">Cosine</option>
-                      <option value="softmax">Softmax</option>
-                      <option value="log">Log</option>
-                    </select>
-                    <select
-                      value={filterNorm}
-                      onChange={(e) => setFilterNorm(e.target.value as NormalizationMode)}
-                      className="input-field text-[11px] font-mono"
-                    >
-                      <option value="none">None</option>
-                      <option value="topic">Topic</option>
-                      <option value="slice">Slice</option>
-                    </select>
-                    <input
-                      type="number"
-                      step="0.05"
-                      value={filterMinScore}
-                      onChange={(e) => setFilterMinScore(e.target.value)}
-                      placeholder=">= val"
-                      className="input-field text-[11px] font-mono"
-                    />
-                  </div>
-                )}
+              <div className="pt-2 border-t border-border">
+                <ScoreThresholdFilter
+                  value={scoreFilter}
+                  onChange={setScoreFilter}
+                  macroCategories={macroCategories}
+                  compact
+                />
               </div>
 
               <button type="submit" disabled={searching} className="btn-secondary w-full text-xs">
@@ -1106,7 +1288,13 @@ export const ComparatorPage: React.FC = () => {
                       <div className="text-[11px] text-muted truncate">
                         {c.doc_type_label} · {c.chunk_count} chunks
                         {c.matched_score !== undefined
-                          ? ` · score ${formatSigFigs(c.matched_score, 3)}`
+                          ? ` · sim ${formatSigFigs(c.matched_score, 3)}`
+                          : ""}
+                        {c.matched_zs_prob !== undefined
+                          ? ` · zs ${formatSigFigs(c.matched_zs_prob, 3)}`
+                          : ""}
+                        {c.matched_rel_prob !== undefined
+                          ? ` · rel ${formatSigFigs(c.matched_rel_prob, 3)}`
                           : ""}
                       </div>
                     </div>
@@ -1377,7 +1565,20 @@ export const ComparatorPage: React.FC = () => {
                 Computing chronological N-partition comparison...
               </div>
             ) : comparison && comparison.categories.length > 0 ? (
-              <EChartBox option={radarOption} className="w-full h-[460px]" />
+              <div className="space-y-3">
+                {radarSummary.autoGroupedByYear && (
+                  <div className="px-3.5 py-2.5 border border-amber-400/70 bg-amber-50 dark:bg-amber-950/40 rounded-sm flex items-start gap-2.5 text-xs text-amber-900 dark:text-amber-200">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+                    <div>
+                      <strong className="font-semibold">Automatic Yearly Grouping Applied:</strong>{" "}
+                      {radarSummary.originalCount} selected items exceed the 10-trace visual
+                      clarity limit. Traces were automatically aggregated by year into{" "}
+                      {radarSummary.plottedCount} yearly averages for readability.
+                    </div>
+                  </div>
+                )}
+                <EChartBox option={radarSummary.option} className="w-full h-[460px]" />
+              </div>
             ) : (
               <div className="h-[420px] flex items-center justify-center text-xs font-mono text-muted">
                 Selected data source ({dataSource}) has no precomputed vectors for these documents.
@@ -1393,15 +1594,31 @@ export const ComparatorPage: React.FC = () => {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <h3 className="text-xs font-mono uppercase tracking-wider font-semibold text-ink">
-                      Chronological Time-Series ({resolvedTimeSeries.ticks.length} sequential points
+                      Chronological Time-Series ({displayedTimeSeries.ticks.length} points
                       · <span className="text-accent-dark">{zoomBadgeLabel}</span>)
                     </h3>
                     <p className="text-[11px] font-mono text-muted">
-                      Scroll or drag to zoom (Years → Months/Meetings → Slices) · Hover to highlight
-                      · Click any point to inspect chunks &amp; sync Radar.
+                      {splitsVisible
+                        ? "Shaded X-axis bands demarcate individual meetings to separate intra-meeting splits from inter-meeting gaps."
+                        : "Showing meeting averages by default · Zoom into a meeting or toggle Show Splits to inspect intra-meeting splits."}
                     </p>
                   </div>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {hasMultipleSplits && (
+                      <button
+                        type="button"
+                        onClick={() => setShowSplitsManual((v) => !v)}
+                        title="Toggle individual intra-meeting splits without zooming"
+                        className={
+                          showSplitsManual
+                            ? "btn-primary py-1 px-2.5 text-xs"
+                            : "btn-secondary py-1 px-2.5 text-xs"
+                        }
+                      >
+                        <Layers className="w-3.5 h-3.5" />
+                        {showSplitsManual ? "Hide Splits" : "Show Splits"}
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => zoomStep(0.6)}

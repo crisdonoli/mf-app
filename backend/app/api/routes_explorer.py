@@ -112,29 +112,52 @@ def explorer_search(
     speaker: Optional[str] = Query(default=None),
     gender: Optional[str] = Query(default=None),
     doc_type: Optional[str] = Query(default=None),
+    doc_types: Optional[list[str]] = Query(default=None),
     query_text: Optional[str] = Query(default=None),
     use_regex: bool = Query(default=False),
     filter_category: Optional[str] = Query(default=None),
     filter_metric: Literal["cosine", "softmax", "log"] = Query(default="cosine"),
     filter_normalization: Literal["none", "topic", "slice", "row", "column"] = Query(default="none"),
     filter_min_score: Optional[float] = Query(default=None),
+    filter_zs_category: Optional[str] = Query(default=None),
+    filter_zs_min_prob: Optional[float] = Query(default=None),
+    filter_rel_class: Optional[Literal["relevant", "irrelevant"]] = Query(default=None),
+    filter_rel_min_prob: Optional[float] = Query(default=None),
     limit: int = Query(default=25, ge=1, le=2000),
     offset: int = Query(default=0, ge=0),
     _user: dict = Depends(get_current_user),
 ):
+    parsed_doc_types: list[str] = []
+    if doc_types:
+        for dt in doc_types:
+            for part in dt.split(","):
+                clean = part.strip()
+                if clean and clean not in parsed_doc_types:
+                    parsed_doc_types.append(clean)
+    if doc_type:
+        for part in doc_type.split(","):
+            clean = part.strip()
+            if clean and clean not in parsed_doc_types:
+                parsed_doc_types.append(clean)
+
     return search_documents(
         date_from=date_from,
         date_to=date_to,
         meeting_date=meeting_date,
         speaker=speaker,
         gender=gender,
-        doc_type=doc_type,
+        doc_type=parsed_doc_types[0] if len(parsed_doc_types) == 1 else None,
+        doc_types=parsed_doc_types if parsed_doc_types else None,
         query_text=query_text,
         use_regex=use_regex,
         filter_category=filter_category,
         filter_metric=filter_metric,
         filter_normalization=filter_normalization,
         filter_min_score=filter_min_score,
+        filter_zs_category=filter_zs_category,
+        filter_zs_min_prob=filter_zs_min_prob,
+        filter_rel_class=filter_rel_class,
+        filter_rel_min_prob=filter_rel_min_prob,
         limit=limit,
         offset=offset,
     )
@@ -157,12 +180,19 @@ def document_chunks(
     doc_type: str,
     meeting_date: str,
     speaker: Optional[str] = Query(default=None),
-    limit: int = Query(default=100, ge=1, le=500),
+    chunk_ids: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     _user: dict = Depends(get_current_user),
 ):
+    parsed_ids = [c.strip() for c in chunk_ids.split(",") if c.strip()] if chunk_ids else None
     return get_document_chunks(
-        doc_type, meeting_date, speaker=speaker, limit=limit, offset=offset
+        doc_type,
+        meeting_date,
+        speaker=speaker,
+        chunk_ids=parsed_ids,
+        limit=limit,
+        offset=offset,
     )
 
 

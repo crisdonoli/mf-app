@@ -37,6 +37,7 @@ from .taxonomy import format_doc_type, format_label
 SplitCriterion = Literal[
     "year",
     "year_range",
+    "custom_range",
     "semester",
     "quarter",
     "month",
@@ -45,7 +46,7 @@ SplitCriterion = Literal[
     "gender",
 ]
 
-TEMPORAL_CRITERIA = {"year", "year_range", "semester", "quarter", "month"}
+TEMPORAL_CRITERIA = {"year", "year_range", "custom_range", "semester", "quarter", "month"}
 PARTICIPANT_CRITERIA = {"speaker", "speaker_role", "gender"}
 
 
@@ -71,11 +72,70 @@ def _temporal_value(meeting_date: str, criterion: str, year_range_span: int = 5)
     return meeting_date, meeting_date, yr
 
 
+
+def _normalize_range_bound(raw: str, *, is_end: bool, max_available_date: str) -> str:
+    """Normalize a custom range bound ('1976', '1979-06', '1979-06-15', or '-' for dynamic latest)."""
+    val = (raw or "").strip()
+    if not val or val == "-":
+        return max_available_date if is_end else "1976-01-01"
+    if len(val) == 4 and val.isdigit():
+        return f"{val}-12-31" if is_end else f"{val}-01-01"
+    if len(val) == 7 and val[4] == "-":
+        return f"{val}-31" if is_end else f"{val}-01"
+    return val
+
+
+def _bucket_custom_ranges(
+    docs_subset: list[dict[str, str]],
+    custom_ranges: list[dict[str, Any]],
+    max_available_date: str,
+) -> tuple[dict[str, list[dict[str, str]]], dict[str, str], list[str]]:
+    """Assign documents into user-defined custom date ranges (supports dynamic '-' latest date)."""
+    buckets: dict[str, list[dict[str, str]]] = defaultdict(list)
+    labels_map: dict[str, str] = {}
+    ordered_keys: list[str] = []
+
+    if not custom_ranges:
+        return buckets, labels_map, ordered_keys
+
+    resolved_specs: list[tuple[str, str, str, str]] = []
+    for idx, spec in enumerate(custom_ranges):
+        raw_start = str(spec.get("start") or "").strip()
+        raw_end = str(spec.get("end") or "-").strip() or "-"
+        if not raw_start:
+            continue
+        norm_start = _normalize_range_bound(raw_start, is_end=False, max_available_date=max_available_date)
+        norm_end = _normalize_range_bound(raw_end, is_end=True, max_available_date=max_available_date)
+        if norm_start > norm_end:
+            norm_start, norm_end = norm_end, norm_start
+        b_key = f"{norm_start}..{norm_end}"
+        end_disp = max_available_date[:4] if raw_end == "-" and len(raw_start) == 4 else (max_available_date if raw_end == "-" else raw_end)
+        custom_lbl = str(spec.get("label") or "").strip()
+        disp = custom_lbl or f"{raw_start}–{end_disp}"
+        if b_key not in labels_map:
+            ordered_keys.append(b_key)
+        labels_map[b_key] = disp
+        resolved_specs.append((b_key, norm_start, norm_end, disp))
+
+    for d in docs_subset:
+        md = d["meeting_date"]
+        for b_key, norm_start, norm_end, _ in resolved_specs:
+            if norm_start <= md <= norm_end:
+                buckets[b_key].append(d)
+
+    return buckets, labels_map, [k for k in ordered_keys if buckets.get(k)]
+
+
 def _match_temporal_filter(meeting_date: str, period_key: str, year_range_span: int = 5) -> bool:
     """Check whether ``meeting_date`` belongs to a canonical ``period_key``."""
     if not period_key:
         return True
     pk = period_key.strip()
+    if ".." in pk:
+        start_s, end_s = pk.split("..", 1)
+        start_norm = _normalize_range_bound(start_s, is_end=False, max_available_date="9999-12-31")
+        end_norm = _normalize_range_bound(end_s, is_end=True, max_available_date="9999-12-31")
+        return start_norm <= meeting_date <= end_norm
     if len(pk) == 10 and pk[4] == "-" and pk[7] == "-":
         return meeting_date == pk
     if "-H" in pk:
@@ -124,11 +184,13 @@ def build_grouping_tree_preview(
     split_levels: list[dict[str, Any]],
     *,
     hidden_node_ids: list[str] | None = None,
+    node_splits: dict[str, dict[str, Any]] | None = None,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     """Build the interactive hierarchical Grouping Tree with exact doc counts (uncapped)."""
     eng = ParquetQueryEngine(settings or get_settings())
     hidden_set = set(hidden_node_ids or [])
+    per_node_splits = node_splits or {}
 
     seen_docs: set[tuple[str, str]] = set()
     unique_docs: list[dict[str, str]] = []
@@ -138,8 +200,12 @@ def build_grouping_tree_preview(
             seen_docs.add(key)
             unique_docs.append({"doc_type": d["doc_type"], "meeting_date": d["meeting_date"]})
 
+    min_available_date = unique_docs[0]["meeting_date"] if unique_docs else "1976-01-01"
+    max_available_date = unique_docs[-1]["meeting_date"] if unique_docs else "2020-12-31"
+
+    all_cfgs = [*split_levels, *per_node_splits.values()]
     used_participant_criteria = {
-        lvl["criterion"] for lvl in split_levels if lvl.get("criterion") in PARTICIPANT_CRITERIA
+        lvl["criterion"] for lvl in all_cfgs if lvl.get("criterion") in PARTICIPANT_CRITERIA
     }
     roster: dict[str, dict[str, str]] = {}
     if used_participant_criteria & {"speaker_role", "gender"}:
@@ -174,29 +240,38 @@ def build_grouping_tree_preview(
             "children": [],
         }
 
-        if level >= len(split_levels) or not docs_subset:
+        lvl_cfg = per_node_splits.get(node_id) or (
+            split_levels[level] if level < len(split_levels) else None
+        )
+        if not lvl_cfg or not docs_subset:
             return node
 
-        lvl_cfg = split_levels[level]
         crit = str(lvl_cfg["criterion"])
         span = int(lvl_cfg.get("year_range_span") or 5)
 
         buckets: dict[str, list[dict[str, str]]] = defaultdict(list)
         labels_map: dict[str, str] = {}
+        ordered_keys: list[str] = []
 
-        if crit in TEMPORAL_CRITERIA:
+        if crit == "custom_range":
+            buckets, labels_map, ordered_keys = _bucket_custom_ranges(
+                docs_subset, lvl_cfg.get("custom_ranges") or [], max_available_date
+            )
+        elif crit in TEMPORAL_CRITERIA:
             for d in docs_subset:
                 sk, disp, _ = _temporal_value(d["meeting_date"], crit, span)
                 buckets[sk].append(d)
                 labels_map[sk] = disp
+            ordered_keys = sorted(buckets.keys())
         else:
             for d in docs_subset:
                 vals = doc_part_vals.get((d["doc_type"], d["meeting_date"]), {}).get(crit, set())
                 for v in vals:
                     buckets[v].append(d)
                     labels_map[v] = v
+            ordered_keys = sorted(buckets.keys())
 
-        for b_key in sorted(buckets.keys()):
+        for b_key in ordered_keys:
             child_id = f"{node_id}/{crit}:{b_key}"
             child_filters = [
                 *path_filters,
@@ -248,6 +323,8 @@ def build_grouping_tree_preview(
         "total_leaves": total_leaves,
         "visible_leaf_count": visible_leaves_count,
         "valid_for_compare": visible_leaves_count >= 1,
+        "min_available_date": min_available_date,
+        "max_available_date": max_available_date,
     }
 
 
@@ -425,6 +502,7 @@ def compare_with_grouping_tree(
     split_levels: list[dict[str, Any]],
     *,
     hidden_node_ids: list[str] | None = None,
+    node_splits: dict[str, dict[str, Any]] | None = None,
     n_partitions: int = 1,
     data_source: Literal["similarity", "zero_shot"] = "similarity",
     metric: MetricTransform = "cosine",
@@ -448,6 +526,7 @@ def compare_with_grouping_tree(
     norm_clean = normalize_mode_alias(normalization)
 
     hidden_set = set(hidden_node_ids or [])
+    per_node_splits = node_splits or {}
     seen_docs: set[tuple[str, str]] = set()
     unique_docs: list[dict[str, str]] = []
     for d in sorted(documents, key=lambda x: (x["meeting_date"], x["doc_type"])):
@@ -456,8 +535,10 @@ def compare_with_grouping_tree(
             seen_docs.add(key)
             unique_docs.append({"doc_type": d["doc_type"], "meeting_date": d["meeting_date"]})
 
+    max_available_date = unique_docs[-1]["meeting_date"] if unique_docs else "2020-12-31"
+    all_cfgs = [*split_levels, *per_node_splits.values()]
     used_participant_criteria = {
-        lvl["criterion"] for lvl in split_levels if lvl.get("criterion") in PARTICIPANT_CRITERIA
+        lvl["criterion"] for lvl in all_cfgs if lvl.get("criterion") in PARTICIPANT_CRITERIA
     }
     roster: dict[str, dict[str, str]] = {}
     if used_participant_criteria & {"speaker_role", "gender"}:
@@ -476,7 +557,10 @@ def compare_with_grouping_tree(
         ancestor_hidden: bool,
     ) -> None:
         eff_hidden = ancestor_hidden or (node_id in hidden_set)
-        if level >= len(split_levels) or not docs_subset:
+        lvl_cfg = per_node_splits.get(node_id) or (
+            split_levels[level] if level < len(split_levels) else None
+        )
+        if not lvl_cfg or not docs_subset:
             if not eff_hidden and docs_subset:
                 visible_leaves.append(
                     {
@@ -487,25 +571,31 @@ def compare_with_grouping_tree(
                 )
             return
 
-        lvl_cfg = split_levels[level]
         crit = str(lvl_cfg["criterion"])
         span = int(lvl_cfg.get("year_range_span") or 5)
         buckets: dict[str, list[dict[str, str]]] = defaultdict(list)
         labels_map: dict[str, str] = {}
+        ordered_keys: list[str] = []
 
-        if crit in TEMPORAL_CRITERIA:
+        if crit == "custom_range":
+            buckets, labels_map, ordered_keys = _bucket_custom_ranges(
+                docs_subset, lvl_cfg.get("custom_ranges") or [], max_available_date
+            )
+        elif crit in TEMPORAL_CRITERIA:
             for d in docs_subset:
                 sk, disp, _ = _temporal_value(d["meeting_date"], crit, span)
                 buckets[sk].append(d)
                 labels_map[sk] = disp
+            ordered_keys = sorted(buckets.keys())
         else:
             for d in docs_subset:
                 vals = doc_part_vals.get((d["doc_type"], d["meeting_date"]), {}).get(crit, set())
                 for v in vals:
                     buckets[v].append(d)
                     labels_map[v] = v
+            ordered_keys = sorted(buckets.keys())
 
-        for b_key in sorted(buckets.keys()):
+        for b_key in ordered_keys:
             child_id = f"{node_id}/{crit}:{b_key}"
             child_filters = [
                 *path_filters,

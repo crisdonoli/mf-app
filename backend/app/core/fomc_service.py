@@ -109,20 +109,28 @@ def search_documents(
     speaker: str | None = None,
     gender: str | None = None,
     doc_type: str | None = None,
+    doc_types: list[str] | None = None,
     query_text: str | None = None,
     use_regex: bool = False,
     filter_category: str | None = None,
     filter_metric: MetricTransform = "cosine",
     filter_normalization: NormalizationMode = "none",
     filter_min_score: float | None = None,
+    filter_zs_category: str | None = None,
+    filter_zs_min_prob: float | None = None,
+    filter_rel_class: Literal["relevant", "irrelevant"] | None = None,
+    filter_rel_min_prob: float | None = None,
     limit: int = 25,
     offset: int = 0,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     eng = _engine(settings)
-    has_score_filter = bool(filter_category and filter_min_score is not None)
-    fetch_limit = max(limit * 4, 150) if has_score_filter else limit
-    fetch_offset = 0 if has_score_filter else offset
+    has_sim_filter = bool(filter_category and filter_min_score is not None)
+    has_zs_filter = bool(filter_zs_category and filter_zs_min_prob is not None)
+    has_rel_filter = bool(filter_rel_class and filter_rel_min_prob is not None)
+    has_any_score_filter = has_sim_filter or has_zs_filter or has_rel_filter
+    fetch_limit = max(limit * 4, 200) if has_any_score_filter else limit
+    fetch_offset = 0 if has_any_score_filter else offset
 
     items, total = eng.search_documents(
         date_from=date_from,
@@ -131,31 +139,80 @@ def search_documents(
         speaker=speaker,
         gender=gender,
         doc_type=doc_type,
+        doc_types=doc_types,
         query_text=query_text,
         use_regex=use_regex,
         limit=fetch_limit,
         offset=fetch_offset,
     )
 
-    if has_score_filter and items:
+    if has_any_score_filter and items:
         filtered: list[dict[str, Any]] = []
         for item in items:
-            _, raw_mat, raw_labels = eng.load_raw_similarity_slice(
-                item["doc_type"], item["meeting_date"]
-            )
-            if raw_mat.size == 0:
-                continue
-            proj_mat, proj_labels = project_matrix_granularity(raw_mat, raw_labels, "macro")
-            if filter_category not in proj_labels:
-                continue
-            col_idx = proj_labels.index(filter_category)
-            part = partition_and_aggregate_chunks(proj_mat, n_partitions=1)
-            trans = transform_matrix(
-                part.matrix, metric=filter_metric, normalization=filter_normalization
-            )
-            score_val = float(trans[0, col_idx])
-            if score_val >= float(filter_min_score):
-                item["matched_score"] = round(score_val, 4)
+            dt = item["doc_type"]
+            md = item["meeting_date"]
+            passed = True
+
+            if has_sim_filter:
+                _, raw_mat, raw_labels = eng.load_raw_similarity_slice(dt, md)
+                if raw_mat.size == 0:
+                    passed = False
+                else:
+                    proj_mat, proj_labels = project_matrix_granularity(raw_mat, raw_labels, "macro")
+                    if filter_category not in proj_labels:
+                        passed = False
+                    else:
+                        col_idx = proj_labels.index(filter_category)
+                        part = partition_and_aggregate_chunks(proj_mat, n_partitions=1)
+                        trans = transform_matrix(
+                            part.matrix, metric=filter_metric, normalization=filter_normalization
+                        )
+                        score_val = float(trans[0, col_idx])
+                        if score_val >= float(filter_min_score):
+                            item["matched_score"] = round(score_val, 4)
+                        else:
+                            passed = False
+
+            if passed and has_zs_filter:
+                zs_rows, _ = eng.load_zero_shot_slice(dt, md)
+                if not zs_rows:
+                    passed = False
+                else:
+                    zs_vals: list[float] = []
+                    for r in zs_rows:
+                        scores = r.get("scores") or {}
+                        if filter_zs_category in scores:
+                            zs_vals.append(float(scores[filter_zs_category]))
+                        else:
+                            subs = [
+                                float(scores[s])
+                                for s in SUBCLASS_HIERARCHY.get(filter_zs_category, [])
+                                if s in scores
+                            ]
+                            if subs:
+                                zs_vals.append(float(np.mean(subs)))
+                    mean_zs = float(np.mean(zs_vals)) if zs_vals else 0.0
+                    if mean_zs >= float(filter_zs_min_prob):
+                        item["matched_zs_prob"] = round(mean_zs, 4)
+                    else:
+                        passed = False
+
+            if passed and has_rel_filter:
+                rel_rows = eng.load_relevance_slice(dt, md)
+                if not rel_rows:
+                    passed = False
+                else:
+                    rel_vals = [
+                        float((r.get("scores") or {}).get(filter_rel_class, 0.0))
+                        for r in rel_rows
+                    ]
+                    mean_rel = float(np.mean(rel_vals)) if rel_vals else 0.0
+                    if mean_rel >= float(filter_rel_min_prob):
+                        item["matched_rel_prob"] = round(mean_rel, 4)
+                    else:
+                        passed = False
+
+            if passed:
                 filtered.append(item)
         total = len(filtered)
         items = filtered[offset : offset + limit]
@@ -176,12 +233,13 @@ def get_document_chunks(
     meeting_date: str,
     *,
     speaker: str | None = None,
+    chunk_ids: list[str] | None = None,
     limit: int = 200,
     offset: int = 0,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     chunks, total = _engine(settings).get_document_chunks(
-        doc_type, meeting_date, speaker=speaker, limit=limit, offset=offset
+        doc_type, meeting_date, speaker=speaker, chunk_ids=chunk_ids, limit=limit, offset=offset
     )
     return {
         "document_id": f"{doc_type}::{meeting_date}",

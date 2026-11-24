@@ -27,6 +27,7 @@ export type SubGroupByMode =
 export type SplitCriterion =
   | "year"
   | "year_range"
+  | "custom_range"
   | "semester"
   | "quarter"
   | "month"
@@ -35,14 +36,22 @@ export type SplitCriterion =
   | "gender";
 export type AggregationMethod = "mean" | "median";
 
+export interface CustomDateRangeSpec {
+  start: string;
+  end: string;
+  label?: string;
+}
+
 export interface SplitLevelConfig {
   criterion: SplitCriterion;
   year_range_span: number;
+  custom_ranges?: CustomDateRangeSpec[];
 }
 
 export interface GroupingTreeConfig {
   split_levels: SplitLevelConfig[];
   hidden_node_ids: string[];
+  node_splits?: Record<string, SplitLevelConfig>;
 }
 
 export interface PathFilterItem {
@@ -71,6 +80,8 @@ export interface TreePreviewResponse {
   total_leaves: number;
   visible_leaf_count: number;
   valid_for_compare: boolean;
+  min_available_date?: string;
+  max_available_date?: string;
 }
 
 export interface TimeTickMeta {
@@ -218,6 +229,8 @@ export interface SearchDocumentItem {
   snippet: string;
   top_speakers: string[];
   matched_score?: number;
+  matched_zs_prob?: number;
+  matched_rel_prob?: number;
 }
 
 export interface SearchResponse {
@@ -376,6 +389,34 @@ export interface StudyConfig {
   grouping_tree?: GroupingTreeConfig | null;
 }
 
+export type StudyType = "comparator" | "explorer_search" | "history";
+
+export interface ExplorerSearchConfig {
+  date_from?: string;
+  date_to?: string;
+  doc_types?: string[];
+  speaker?: string;
+  query_text?: string;
+  use_regex?: boolean;
+  filter_category?: string;
+  filter_metric?: MetricTransform;
+  filter_normalization?: NormalizationMode;
+  filter_min_score?: number | null;
+  filter_zs_category?: string;
+  filter_zs_min_prob?: number | null;
+  filter_rel_class?: "" | "relevant" | "irrelevant";
+  filter_rel_min_prob?: number | null;
+}
+
+export interface HistoryPortfolioConfig {
+  entries: Array<{
+    kind: "search" | "document";
+    label: string;
+    payload: Record<string, unknown>;
+    created_at?: string;
+  }>;
+}
+
 export interface StudyItem {
   id: number;
   owner_id: number;
@@ -388,8 +429,9 @@ export interface StudyItem {
   forks: { id: number; title: string; owner_username: string; is_public: boolean }[];
   title: string;
   description: string;
-  config: StudyConfig;
+  config: StudyConfig & Record<string, unknown>;
   is_public: boolean;
+  study_type?: StudyType;
   created_at: string;
   last_modified: string;
 }

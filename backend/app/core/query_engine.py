@@ -123,6 +123,7 @@ class ParquetQueryEngine:
     def _collect_meta_files(
         self,
         doc_type: str | None = None,
+        doc_types: list[str] | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
         meeting_date: str | None = None,
@@ -141,9 +142,15 @@ class ParquetQueryEngine:
             if date_to and len(date_to) >= 4:
                 max_year = min(int(date_to[:4]), CORPUS_MAX_YEAR)
 
+        eff_types: list[str] = []
+        if doc_types:
+            eff_types = [d.strip() for d in doc_types if d and d.strip()]
+        elif doc_type:
+            eff_types = [d.strip() for d in doc_type.split(",") if d.strip()]
+
         dt_dirs = (
-            [meta_dir / f"doc_type={doc_type}"]
-            if doc_type
+            [meta_dir / f"doc_type={dt}" for dt in eff_types]
+            if eff_types
             else sorted(p for p in meta_dir.glob("doc_type=*") if p.is_dir())
         )
 
@@ -489,6 +496,7 @@ class ParquetQueryEngine:
         speaker: str | None = None,
         gender: str | None = None,
         doc_type: str | None = None,
+        doc_types: list[str] | None = None,
         query_text: str | None = None,
         use_regex: bool = False,
         limit: int = 25,
@@ -500,8 +508,14 @@ class ParquetQueryEngine:
         if out_of_range:
             return [], 0
 
+        eff_types: list[str] = []
+        if doc_types:
+            eff_types = [d.strip() for d in doc_types if d and d.strip()]
+        elif doc_type:
+            eff_types = [d.strip() for d in doc_type.split(",") if d.strip()]
+
         meta_dir = self.settings.resolve_text_metadata_dir()
-        if doc_type == "agenda_items" and not (meta_dir / "doc_type=agenda_items").is_dir():
+        if eff_types == ["agenda_items"] and not (meta_dir / "doc_type=agenda_items").is_dir():
             return self._search_agendas(
                 date_from=eff_from,
                 date_to=eff_to,
@@ -513,7 +527,7 @@ class ParquetQueryEngine:
             )
 
         files = self._collect_meta_files(
-            doc_type=doc_type,
+            doc_types=eff_types if eff_types else None,
             date_from=eff_from,
             date_to=eff_to,
             meeting_date=eff_meeting,
@@ -824,12 +838,18 @@ class ParquetQueryEngine:
         meeting_date: str,
         *,
         speaker: str | None = None,
+        chunk_ids: list[str] | None = None,
         limit: int = 200,
         offset: int = 0,
     ) -> tuple[list[dict[str, Any]], int]:
         meta_dir = self.settings.resolve_text_metadata_dir()
         if doc_type == "agenda_items" and not (meta_dir / "doc_type=agenda_items").is_dir():
-            return self._get_agenda_chunks(meeting_date, limit=limit, offset=offset)
+            rows, total = self._get_agenda_chunks(meeting_date, limit=50000 if chunk_ids else limit, offset=0 if chunk_ids else offset)
+            if chunk_ids:
+                cid_set = set(chunk_ids)
+                filtered = [r for r in rows if r["chunk_id"] in cid_set]
+                return filtered[offset : offset + limit], len(filtered)
+            return rows, total
 
         files = self._collect_meta_files(doc_type=doc_type, meeting_date=meeting_date)
         if not files:
@@ -842,6 +862,10 @@ class ParquetQueryEngine:
             if speaker:
                 where.append("speaker ILIKE ?")
                 params.append(f"%{speaker}%")
+            if chunk_ids:
+                placeholders = ", ".join(["?"] * len(chunk_ids))
+                where.append(f"chunk_id IN ({placeholders})")
+                params.extend(chunk_ids)
             where_sql = " AND ".join(where)
 
             conn = self._connect_duckdb()
@@ -892,8 +916,11 @@ class ParquetQueryEngine:
             avail = [c for c in cols if c in pq.read_schema(pq_path).names]
             dset = ds.dataset(pq_path, format="parquet")
             table = dset.to_table(columns=avail, filter=(ds.field("meeting_date") == meeting_date))
+            cid_set = set(chunk_ids) if chunk_ids else None
             for r in table.to_pylist():
                 if speaker and speaker.lower() not in str(r.get("speaker") or "").lower():
+                    continue
+                if cid_set is not None and str(r.get("chunk_id") or "") not in cid_set:
                     continue
                 all_rows.append(
                     {

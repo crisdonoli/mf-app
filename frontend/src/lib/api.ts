@@ -12,6 +12,7 @@ import type {
   DataSourceMode,
   DbVersionsResponse,
   DocTypeOption,
+  DocumentChunk,
   FavoriteItem,
   FavoriteList,
   FixRequestItem,
@@ -32,6 +33,7 @@ import type {
   SplitLevelConfig,
   StudyConfig,
   StudyItem,
+  StudyType,
   SubGroupByMode,
   TaxonomyResponse,
   TreePreviewResponse,
@@ -114,15 +116,57 @@ export const api = {
     speaker?: string;
     gender?: string;
     doc_type?: string;
+    doc_types?: string[];
     query_text?: string;
     use_regex?: boolean;
     filter_category?: string;
     filter_metric?: MetricTransform;
     filter_normalization?: NormalizationMode;
     filter_min_score?: number;
+    filter_zs_category?: string;
+    filter_zs_min_prob?: number;
+    filter_rel_class?: "relevant" | "irrelevant";
+    filter_rel_min_prob?: number;
     limit?: number;
     offset?: number;
-  }) => request<SearchResponse>(`/api/explorer/search${qs(params)}`),
+  }) => {
+    const { doc_types, ...rest } = params;
+    const effectiveDocType =
+      doc_types && doc_types.length > 0 ? doc_types.join(",") : rest.doc_type;
+    return request<SearchResponse>(
+      `/api/explorer/search${qs({ ...rest, doc_type: effectiveDocType })}`
+    );
+  },
+
+  getDocumentChunks: (
+    docType: string,
+    meetingDate: string,
+    params?: { speaker?: string; chunk_ids?: string[]; limit?: number; offset?: number }
+  ) => {
+    const chunkIdsStr =
+      params?.chunk_ids && params.chunk_ids.length > 0
+        ? params.chunk_ids.join(",")
+        : undefined;
+    return request<{
+      document_id: string;
+      doc_type: string;
+      doc_type_label: string;
+      meeting_date: string;
+      chunks: DocumentChunk[];
+      total: number;
+      limit: number;
+      offset: number;
+    }>(
+      `/api/explorer/documents/${encodeURIComponent(docType)}/${encodeURIComponent(
+        meetingDate
+      )}/chunks${qs({
+        speaker: params?.speaker,
+        chunk_ids: chunkIdsStr,
+        limit: params?.limit,
+        offset: params?.offset,
+      })}`
+    );
+  },
 
   getMeetingBundle: (meetingDate: string, primaryDocType?: string) =>
     request<MeetingBundleResponse>(
@@ -173,6 +217,7 @@ export const api = {
     documents: CompareDocumentRef[];
     split_levels: SplitLevelConfig[];
     hidden_node_ids: string[];
+    node_splits?: Record<string, SplitLevelConfig>;
   }) =>
     request<TreePreviewResponse>("/api/comparator/tree-preview", {
       method: "POST",
@@ -227,8 +272,9 @@ export const api = {
   createStudy: (body: {
     title: string;
     description: string;
-    config: StudyConfig;
+    config: StudyConfig | Record<string, unknown>;
     is_public?: boolean;
+    study_type?: StudyType;
   }) =>
     request<StudyItem>("/api/studies", {
       method: "POST",
@@ -240,8 +286,9 @@ export const api = {
     patch: {
       title?: string;
       description?: string;
-      config?: StudyConfig;
+      config?: StudyConfig | Record<string, unknown>;
       is_public?: boolean;
+      study_type?: StudyType;
     }
   ) =>
     request<StudyItem>(`/api/studies/${studyId}`, {

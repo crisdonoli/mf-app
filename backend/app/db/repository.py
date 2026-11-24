@@ -38,6 +38,42 @@ except ImportError:  # pragma: no cover
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+_FORBIDDEN_RAW_CONFIG_KEYS = {
+    "results",
+    "raw_results",
+    "chunks",
+    "text_content",
+    "snippet",
+    "documents_raw",
+    "full_text",
+}
+
+
+def _sanitize_study_config(study_type: str, config: dict[str, Any]) -> dict[str, Any]:
+    """Ensure Explorer search & History portfolio entries store ONLY query parameters/filters."""
+    if study_type not in ("explorer_search", "history") or not isinstance(config, dict):
+        return config
+    cleaned: dict[str, Any] = {}
+    for k, v in config.items():
+        if k in _FORBIDDEN_RAW_CONFIG_KEYS:
+            continue
+        if isinstance(v, dict):
+            cleaned[k] = {dk: dv for dk, dv in v.items() if dk not in _FORBIDDEN_RAW_CONFIG_KEYS}
+        elif isinstance(v, list):
+            cleaned_list = []
+            for item in v:
+                if isinstance(item, dict):
+                    cleaned_list.append({
+                        ik: iv for ik, iv in item.items() if ik not in _FORBIDDEN_RAW_CONFIG_KEYS
+                    })
+                else:
+                    cleaned_list.append(item)
+            cleaned[k] = cleaned_list
+        else:
+            cleaned[k] = v
+    return cleaned
+
+
 
 if HAS_SQLALCHEMY:
 
@@ -109,6 +145,7 @@ if HAS_SQLALCHEMY:
         description: Mapped[str] = mapped_column(Text, default="")
         config_json: Mapped[str] = mapped_column(Text, nullable=False)
         is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+        study_type: Mapped[str] = mapped_column(String(32), default="comparator", nullable=False)
         created_at: Mapped[str] = mapped_column(String(64), default=_utc_now_iso)
         last_modified: Mapped[str] = mapped_column(String(64), default=_utc_now_iso)
 
@@ -182,6 +219,9 @@ class AppRepository:
                 conn.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
             if "status" not in cols:
                 conn.execute("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+            study_cols = {r["name"] for r in conn.execute("PRAGMA table_info(studies)").fetchall()}
+            if study_cols and "study_type" not in study_cols:
+                conn.execute("ALTER TABLE studies ADD COLUMN study_type TEXT NOT NULL DEFAULT 'comparator'")
             conn.commit()
 
     def _init_sqlite_schema(self) -> None:
@@ -230,6 +270,7 @@ class AppRepository:
                     description TEXT NOT NULL DEFAULT '',
                     config_json TEXT NOT NULL,
                     is_public INTEGER NOT NULL DEFAULT 0,
+                    study_type TEXT NOT NULL DEFAULT 'comparator',
                     created_at TEXT NOT NULL,
                     last_modified TEXT NOT NULL
                 );
@@ -523,6 +564,7 @@ class AppRepository:
             "description": raw["description"],
             "config": json.loads(raw["config_json"]),
             "is_public": bool(raw["is_public"]),
+            "study_type": raw.get("study_type") or "comparator",
             "created_at": raw["created_at"],
             "last_modified": raw["last_modified"],
         }
@@ -542,6 +584,7 @@ class AppRepository:
                         "description": s.description,
                         "config_json": s.config_json,
                         "is_public": bool(s.is_public),
+                        "study_type": getattr(s, "study_type", "comparator") or "comparator",
                         "created_at": s.created_at,
                         "last_modified": s.last_modified,
                     }
@@ -560,11 +603,14 @@ class AppRepository:
         config: dict[str, Any],
         is_public: bool = False,
         *,
+        study_type: str = "comparator",
         primary_author_id: int | None = None,
         parent_study_id: int | None = None,
     ) -> dict[str, Any]:
         now = _utc_now_iso()
-        serialized = json.dumps(config, default=str)
+        clean_type = study_type if study_type in ("comparator", "explorer_search", "history") else "comparator"
+        sanitized_cfg = _sanitize_study_config(clean_type, config)
+        serialized = json.dumps(sanitized_cfg, default=str)
         p_author = primary_author_id or owner_id
         if HAS_SQLALCHEMY and self._engine is not None:
             with Session(self._engine) as session:
@@ -576,6 +622,7 @@ class AppRepository:
                     description=description.strip(),
                     config_json=serialized,
                     is_public=bool(is_public),
+                    study_type=clean_type,
                     created_at=now,
                     last_modified=now,
                 )
@@ -588,8 +635,8 @@ class AppRepository:
                     """
                     INSERT INTO studies (
                         owner_id, primary_author_id, parent_study_id,
-                        title, description, config_json, is_public, created_at, last_modified
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        title, description, config_json, is_public, study_type, created_at, last_modified
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         owner_id,
@@ -599,6 +646,7 @@ class AppRepository:
                         description.strip(),
                         serialized,
                         1 if is_public else 0,
+                        clean_type,
                         now,
                         now,
                     ),
@@ -639,6 +687,7 @@ class AppRepository:
         description: str | None = None,
         config: dict[str, Any] | None = None,
         is_public: bool | None = None,
+        study_type: str | None = None,
     ) -> dict[str, Any] | None:
         now = _utc_now_iso()
         if HAS_SQLALCHEMY and self._engine is not None:
@@ -648,12 +697,15 @@ class AppRepository:
                 )
                 if not st:
                     return None
+                if study_type is not None:
+                    st.study_type = study_type
+                eff_type = getattr(st, "study_type", "comparator") or "comparator"
                 if title is not None:
                     st.title = title.strip()
                 if description is not None:
                     st.description = description.strip()
                 if config is not None:
-                    st.config_json = json.dumps(config, default=str)
+                    st.config_json = json.dumps(_sanitize_study_config(eff_type, config), default=str)
                 if is_public is not None:
                     st.is_public = bool(is_public)
                 st.last_modified = now
@@ -665,17 +717,19 @@ class AppRepository:
                 ).fetchone()
                 if not row:
                     return None
+                eff_type = study_type or (row["study_type"] if "study_type" in row.keys() else "comparator") or "comparator"
                 conn.execute(
                     """
                     UPDATE studies
-                    SET title = ?, description = ?, config_json = ?, is_public = ?, last_modified = ?
+                    SET title = ?, description = ?, config_json = ?, is_public = ?, study_type = ?, last_modified = ?
                     WHERE id = ? AND owner_id = ?
                     """,
                     (
                         title.strip() if title is not None else row["title"],
                         description.strip() if description is not None else row["description"],
-                        json.dumps(config, default=str) if config is not None else row["config_json"],
+                        json.dumps(_sanitize_study_config(eff_type, config), default=str) if config is not None else row["config_json"],
                         (1 if is_public else 0) if is_public is not None else row["is_public"],
+                        eff_type,
                         now,
                         study_id,
                         user_id,
@@ -718,6 +772,7 @@ class AppRepository:
             description=description if description is not None else parent["description"],
             config=config_override if config_override is not None else parent["config"],
             is_public=False,
+            study_type=parent.get("study_type") or "comparator",
             primary_author_id=parent["primary_author_id"],
             parent_study_id=parent["id"],
         )

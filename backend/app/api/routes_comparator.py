@@ -14,9 +14,20 @@ from ..core.grouping_tree import (
     format_chronological_csv,
     inspect_slice_or_node,
 )
-from ..schemas import CompareRequest, SliceInspectRequest, TreePreviewRequest
+from ..schemas import CompareRequest, SliceInspectRequest, SplitLevelConfig, TreePreviewRequest
 
 router = APIRouter(prefix="/api/comparator", tags=["Comparator"])
+
+
+def _serialize_split_level(lvl: SplitLevelConfig) -> dict:
+    return {
+        "criterion": lvl.criterion,
+        "year_range_span": lvl.year_range_span,
+        "custom_ranges": [
+            {"start": r.start, "end": r.end, "label": r.label}
+            for r in (lvl.custom_ranges or [])
+        ],
+    }
 
 
 @router.post("/tree-preview")
@@ -26,14 +37,16 @@ def preview_grouping_tree(
 ):
     """Compute hierarchical Grouping Tree counts and visible leaf availability (>= 1)."""
     docs = [{"doc_type": d.doc_type, "meeting_date": d.meeting_date} for d in body.documents]
-    levels = [
-        {"criterion": lvl.criterion, "year_range_span": lvl.year_range_span}
-        for lvl in body.split_levels
-    ]
+    levels = [_serialize_split_level(lvl) for lvl in body.split_levels]
+    node_splits = {
+        nid: _serialize_split_level(cfg)
+        for nid, cfg in (body.node_splits or {}).items()
+    }
     return build_grouping_tree_preview(
         docs,
         levels,
         hidden_node_ids=body.hidden_node_ids,
+        node_splits=node_splits,
     )
 
 
@@ -72,18 +85,23 @@ def compare_fomc_documents(
         {"doc_type": d.doc_type, "meeting_date": d.meeting_date}
         for d in body.documents
     ]
-    if body.grouping_tree is not None and (
-        body.combine_by == "tree" or len(body.grouping_tree.split_levels) > 0
-    ):
-        levels = [
-            {"criterion": lvl.criterion, "year_range_span": lvl.year_range_span}
-            for lvl in body.grouping_tree.split_levels
-        ]
+    has_tree_config = body.grouping_tree is not None and (
+        body.combine_by == "tree"
+        or len(body.grouping_tree.split_levels) > 0
+        or len(body.grouping_tree.node_splits) > 0
+    )
+    if has_tree_config and body.grouping_tree is not None:
+        levels = [_serialize_split_level(lvl) for lvl in body.grouping_tree.split_levels]
+        node_splits = {
+            nid: _serialize_split_level(cfg)
+            for nid, cfg in (body.grouping_tree.node_splits or {}).items()
+        }
         try:
             return compare_with_grouping_tree(
                 docs,
                 levels,
                 hidden_node_ids=body.grouping_tree.hidden_node_ids,
+                node_splits=node_splits,
                 n_partitions=body.n_partitions,
                 data_source=body.data_source,
                 metric=body.metric,

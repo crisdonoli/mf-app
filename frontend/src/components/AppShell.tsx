@@ -1,6 +1,7 @@
-/** Top navigation bar (with FEN Theme-Aware Logo, Team Link, Light/Dark Switcher, Notifications) & History Sidebar. */
+/** Top navigation bar (with Theme-Adaptive SVG Logo, Team Link, Light/Dark Switcher, Notifications),
+ * Collapsible Search History Drawer (with CSV Export & Portfolio Save), and Institutional Footer. */
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import {
   Bell,
@@ -8,20 +9,23 @@ import {
   CheckCheck,
   Clock,
   Database,
+  Download,
   FileText,
   FolderKanban,
   GitCompare,
+  Globe,
   History,
+  Lock,
   LogIn,
   Moon,
-  PanelLeftClose,
-  PanelLeftOpen,
+  Save,
   Search,
   Shield,
   Sun,
   Trash2,
   User,
   Users,
+  X,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
@@ -29,10 +33,30 @@ import { useWorkspace } from "../context/WorkspaceContext";
 import { api } from "../lib/api";
 import fenDarkLogo from "../static/fen-dark.webp";
 import fenLightLogo from "../static/fen-light.webp";
+import fomcLogoRaw from "../static/fomc-logo.svg?raw";
 import type { NotificationItem } from "../types/api";
 
 interface AppShellProps {
   children: React.ReactNode;
+}
+
+/** Ensure imported SVG dynamically adapts fills/strokes to currentColor in Light/Dark Mode. */
+function makeThemeAdaptiveSvg(rawSvg: string): string {
+  return rawSvg
+    .replace(
+      /(fill|stroke)="(?!none|transparent|url\()([^"]+)"/gi,
+      '$1="currentColor"'
+    )
+    .replace(
+      /(fill|stroke)\s*:\s*(?!none|transparent|url\()([^;"']+)/gi,
+      "$1:currentColor"
+    )
+    .replace(/<svg\b([^>]*)>/i, (_match, attrs: string) => {
+      const cleaned = attrs
+        .replace(/\b(width|height)="[^"]*"/gi, "")
+        .trim();
+      return `<svg ${cleaned} class="h-7 w-auto block">`;
+    });
 }
 
 export const AppShell: React.FC<AppShellProps> = ({ children }) => {
@@ -56,6 +80,16 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
 
+  // Save History to Portfolio Modal
+  const [saveHistoryOpen, setSaveHistoryOpen] = useState(false);
+  const [historyTitle, setHistoryTitle] = useState("");
+  const [historyDesc, setHistoryDesc] = useState("");
+  const [historyPublic, setHistoryPublic] = useState(false);
+  const [savingHistory, setSavingHistory] = useState(false);
+  const [historySaveMsg, setHistorySaveMsg] = useState<string | null>(null);
+
+  const adaptiveLogoSvg = useMemo(() => makeThemeAdaptiveSvg(fomcLogoRaw), []);
+
   const loadNotifications = useCallback(() => {
     if (!user) return;
     api
@@ -74,6 +108,68 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
     return () => window.clearInterval(timer);
   }, [user, loadNotifications]);
 
+  const handleExportHistoryCsv = () => {
+    if (history.length === 0) return;
+    const esc = (val: string | number) => {
+      const s = String(val);
+      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const headers = ["id", "kind", "label", "created_at", "parameters_json"];
+    const lines = [headers.join(",")];
+    for (const item of history) {
+      lines.push(
+        [
+          item.id,
+          item.kind,
+          item.label,
+          item.created_at,
+          JSON.stringify(item.payload || {}),
+        ]
+          .map(esc)
+          .join(",")
+      );
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `miningfomc_history_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleSaveHistoryToPortfolio = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!historyTitle.trim() || history.length === 0) return;
+    setSavingHistory(true);
+    setHistorySaveMsg(null);
+    try {
+      // Persist ONLY query parameters & applied filters (no raw results or full text)
+      const entries = history.map((h) => ({
+        kind: h.kind,
+        label: h.label,
+        payload: h.payload || {},
+        created_at: h.created_at,
+      }));
+      await api.createStudy({
+        title: historyTitle.trim(),
+        description: historyDesc.trim(),
+        config: { entries },
+        is_public: historyPublic,
+        study_type: "history",
+      });
+      setHistorySaveMsg("History saved to your Portfolio.");
+      setTimeout(() => {
+        setHistorySaveMsg(null);
+        setSaveHistoryOpen(false);
+      }, 900);
+    } catch (err) {
+      setHistorySaveMsg(err instanceof Error ? err.message : "Failed to save history");
+    } finally {
+      setSavingHistory(false);
+    }
+  };
+
   const navLinkClass = ({ isActive }: { isActive: boolean }) =>
     `px-2.5 py-1.5 text-xs sm:text-sm font-medium rounded-sm transition-colors flex items-center gap-1.5 ${
       isActive
@@ -81,50 +177,25 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
         : "text-muted hover:text-ink hover:bg-slate-100 dark:hover:bg-slate-800"
     }`;
 
+  const currentYear = new Date().getFullYear();
+
   return (
     <div className="min-h-screen flex flex-col bg-canvas text-ink">
       {/* Top Navigation Bar */}
       <header className="sticky top-0 z-30 h-14 bg-surface/95 backdrop-blur border-b border-border">
         <div className="h-full max-w-[1640px] mx-auto px-4 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
-            {user && (
-              <button
-                type="button"
-                onClick={() => setSidebarOpen(!sidebarOpen)}
-                title={sidebarOpen ? "Collapse history sidebar" : "Expand history sidebar"}
-                className="p-1.5 text-muted hover:text-ink border border-border rounded-sm hover:border-accent transition-colors shrink-0"
-              >
-                {sidebarOpen ? (
-                  <PanelLeftClose className="w-4 h-4" />
-                ) : (
-                  <PanelLeftOpen className="w-4 h-4" />
-                )}
-              </button>
-            )}
-            <Link to="/" className="flex items-center gap-2.5 min-w-0">
-              <span className="w-6 h-6 bg-[#1E3A8A] dark:bg-[#2563EB] text-white font-mono text-xs font-semibold flex items-center justify-center rounded-sm shrink-0">
-                MF
-              </span>
-              <span className="font-display font-semibold tracking-tight text-base text-ink shrink-0">
-                MiningFOMC
-              </span>
+            <Link
+              to="/"
+              aria-label="MiningFOMC Home"
+              className="flex items-center gap-2.5 min-w-0 text-ink hover:text-accent transition-colors"
+            >
+              <span
+                className="inline-flex items-center shrink-0 text-ink"
+                dangerouslySetInnerHTML={{ __html: adaptiveLogoSvg }}
+              />
               <span className="hidden xl:inline-block mono-tag">1976–2020</span>
             </Link>
-
-            <span className="hidden sm:inline-block h-5 w-px bg-border mx-0.5 shrink-0" />
-            <a
-              href="https://fen.uchile.cl/"
-              target="_blank"
-              rel="noopener noreferrer"
-              title="FEN — Facultad de Economía y Negocios, Universidad de Chile"
-              className="hidden sm:inline-flex items-center shrink-0 opacity-90 hover:opacity-100 transition-opacity"
-            >
-              <img
-                src={isDark ? fenDarkLogo : fenLightLogo}
-                alt="FEN — Universidad de Chile"
-                className="h-7 w-auto object-contain"
-              />
-            </a>
           </div>
 
           <nav className="flex items-center gap-1">
@@ -309,27 +380,58 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
         </div>
       </header>
 
-      {/* Main Layout Shell with Collapsible Search History Sidebar */}
-      <div className="flex-1 flex max-w-[1640px] w-full mx-auto">
+      {/* Main Layout Shell with Collapsible History Sidebar & Aligned Peeking Side Tab */}
+      <div className="flex-1 flex max-w-[1640px] w-full mx-auto relative">
         {user && sidebarOpen && (
           <aside className="w-64 shrink-0 border-r border-border bg-surface hidden lg:flex flex-col">
-            <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <History className="w-3.5 h-3.5 text-muted" />
-                <span className="text-xs font-mono uppercase tracking-wider text-muted font-semibold">
-                  Search History
+            <div className="sticky top-14 z-10 bg-surface px-4 py-3 border-b border-border flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setSidebarOpen(false)}
+                title="Collapse History panel"
+                className="flex items-center gap-2 text-muted hover:text-ink transition-colors group min-w-0"
+              >
+                <History className="w-4 h-4 text-accent group-hover:scale-105 transition-transform shrink-0" />
+                <span className="text-xs font-mono uppercase tracking-wider font-semibold truncate">
+                  History ({history.length})
                 </span>
+              </button>
+              <div className="flex items-center gap-1 shrink-0">
+                {history.length > 0 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleExportHistoryCsv}
+                      title="Export history to CSV"
+                      className="p-1 text-muted hover:text-ink rounded-sm transition-colors"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHistoryTitle(`Search History (${history.length} items)`);
+                        setHistoryDesc("");
+                        setHistoryPublic(false);
+                        setHistorySaveMsg(null);
+                        setSaveHistoryOpen(true);
+                      }}
+                      title="Save history parameters to Portfolio"
+                      className="p-1 text-muted hover:text-accent rounded-sm transition-colors"
+                    >
+                      <Save className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearHistory}
+                      title="Clear search history"
+                      className="p-1 text-muted hover:text-red-600 rounded-sm transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </>
+                )}
               </div>
-              {history.length > 0 && (
-                <button
-                  type="button"
-                  onClick={clearHistory}
-                  title="Clear search history"
-                  className="text-muted hover:text-red-600 transition-colors"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              )}
             </div>
 
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
@@ -372,8 +474,132 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
           </aside>
         )}
 
+        {/* Collapsed History Side Tab peeking from left edge at the exact same vertical height as the open title */}
+        {user && !sidebarOpen && (
+          <div className="hidden lg:block shrink-0">
+            <div className="sticky top-14 z-20">
+              <button
+                type="button"
+                onClick={() => setSidebarOpen(true)}
+                title="Expand History panel"
+                className="flex items-center gap-1.5 px-2.5 py-3 bg-surface border-r border-b border-border rounded-br-sm shadow-sm text-xs font-mono uppercase tracking-wider font-semibold text-muted hover:text-ink hover:border-accent transition-colors"
+              >
+                <History className="w-4 h-4 text-accent shrink-0" />
+                <span>History ({history.length})</span>
+              </button>
+            </div>
+          </div>
+        )}
+
         <main className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8">{children}</main>
       </div>
+
+      {/* Institutional Footer with Relocated FEN Logo */}
+      <footer className="border-t border-border bg-surface/90 mt-auto">
+        <div className="max-w-[1640px] mx-auto px-4 sm:px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <a
+            href="https://fen.uchile.cl/"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="FEN — Facultad de Economía y Negocios, Universidad de Chile"
+            className="inline-flex items-center opacity-90 hover:opacity-100 transition-opacity"
+          >
+            <img
+              src={isDark ? fenDarkLogo : fenLightLogo}
+              alt="FEN — Universidad de Chile"
+              className="h-8 w-auto object-contain"
+            />
+          </a>
+          <p className="text-xs font-mono text-muted text-center sm:text-right">
+            © {currentYear} · Proyecto financiado por Fondos de Investigacion FEN.
+          </p>
+        </div>
+      </footer>
+
+      {/* Save History to Portfolio Modal */}
+      {saveHistoryOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="panel w-full max-w-md bg-surface shadow-2xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-border bg-zinc-50 flex items-center justify-between">
+              <div className="flex items-center gap-2 text-xs font-mono uppercase font-semibold text-ink">
+                <Save className="w-3.5 h-3.5 text-accent" />
+                Save History to Portfolio
+              </div>
+              <button
+                type="button"
+                onClick={() => setSaveHistoryOpen(false)}
+                className="text-muted hover:text-ink p-0.5"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <form onSubmit={handleSaveHistoryToPortfolio} className="p-4 space-y-3">
+              <p className="text-[11px] font-mono text-muted">
+                Stores only the {history.length} query parameter definitions and filters (no raw
+                results or full document text). Loading restores and re-runs queries on demand.
+              </p>
+              <div>
+                <label className="block text-[11px] font-mono uppercase text-muted mb-1">
+                  Title
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={historyTitle}
+                  onChange={(e) => setHistoryTitle(e.target.value)}
+                  className="input-field text-xs"
+                  placeholder="e.g., 1979-1982 Volcker Disinflation Queries"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-mono uppercase text-muted mb-1">
+                  Description (Optional)
+                </label>
+                <textarea
+                  rows={2}
+                  value={historyDesc}
+                  onChange={(e) => setHistoryDesc(e.target.value)}
+                  className="input-field text-xs"
+                  placeholder="Notes about this research history..."
+                />
+              </div>
+              <div className="flex items-center justify-between border border-border rounded-sm px-3 py-2 bg-canvas">
+                <span className="text-xs font-mono text-ink flex items-center gap-1.5">
+                  {historyPublic ? (
+                    <Globe className="w-3.5 h-3.5 text-accent" />
+                  ) : (
+                    <Lock className="w-3.5 h-3.5 text-muted" />
+                  )}
+                  Visibility: <strong>{historyPublic ? "Public" : "Private"}</strong>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setHistoryPublic((v) => !v)}
+                  className="btn-secondary py-1 px-2.5 text-[11px]"
+                >
+                  Switch to {historyPublic ? "Private" : "Public"}
+                </button>
+              </div>
+              {historySaveMsg && (
+                <div className="text-xs font-mono text-accent-dark">{historySaveMsg}</div>
+              )}
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setSaveHistoryOpen(false)}
+                  className="btn-secondary text-xs"
+                >
+                  Cancel
+                </button>
+                <button type="submit" disabled={savingHistory} className="btn-primary text-xs">
+                  <Save className="w-3.5 h-3.5" />
+                  {savingHistory ? "Saving..." : "Save to Portfolio"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

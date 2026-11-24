@@ -1,4 +1,4 @@
-"""Typed Pydantic request and response schemas for the MiningFOMC V4 API."""
+"""Typed Pydantic request and response schemas for the MiningFOMC API."""
 
 from __future__ import annotations
 
@@ -55,11 +55,15 @@ class AdminResolveFixRequest(BaseModel):
 
 
 # ------------------------------------------------------------------ Studies (Portfolio & Community)
+StudyTypeLiteral = Literal["comparator", "explorer_search", "history"]
+
+
 class StudyCreateRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     description: str = Field(default="", max_length=2000)
     config: dict
     is_public: bool = False
+    study_type: StudyTypeLiteral = "comparator"
 
 
 class StudyUpdateRequest(BaseModel):
@@ -67,6 +71,7 @@ class StudyUpdateRequest(BaseModel):
     description: Optional[str] = Field(default=None, max_length=2000)
     config: Optional[dict] = None
     is_public: Optional[bool] = None
+    study_type: Optional[StudyTypeLiteral] = None
 
 
 class StudyForkRequest(BaseModel):
@@ -146,6 +151,7 @@ class CompareDocumentRef(BaseModel):
 SplitCriterionLiteral = Literal[
     "year",
     "year_range",
+    "custom_range",
     "semester",
     "quarter",
     "month",
@@ -155,20 +161,29 @@ SplitCriterionLiteral = Literal[
 ]
 
 
+class CustomDateRangeSpec(BaseModel):
+    start: str = Field(..., min_length=4, max_length=10)
+    end: str = Field(default="-", max_length=10)
+    label: Optional[str] = Field(default=None, max_length=80)
+
+
 class SplitLevelConfig(BaseModel):
     criterion: SplitCriterionLiteral
     year_range_span: int = Field(default=5, ge=2, le=20)
+    custom_ranges: list[CustomDateRangeSpec] = Field(default_factory=list)
 
 
 class GroupingTreeConfig(BaseModel):
     split_levels: list[SplitLevelConfig] = Field(default_factory=list)
     hidden_node_ids: list[str] = Field(default_factory=list)
+    node_splits: dict[str, SplitLevelConfig] = Field(default_factory=dict)
 
 
 class TreePreviewRequest(BaseModel):
     documents: list[CompareDocumentRef] = Field(..., min_items=1, max_items=5000)
     split_levels: list[SplitLevelConfig] = Field(default_factory=list)
     hidden_node_ids: list[str] = Field(default_factory=list)
+    node_splits: dict[str, SplitLevelConfig] = Field(default_factory=dict)
 
 
 class SliceInspectRequest(BaseModel):

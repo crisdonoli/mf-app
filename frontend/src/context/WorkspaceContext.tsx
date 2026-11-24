@@ -39,6 +39,7 @@ interface WorkspaceContextValue {
     payload: Record<string, unknown>
   ) => void;
   clearHistory: () => void;
+  replaceHistory: (entries: SearchHistoryItem[]) => void;
   restoreRequest: ExplorerRestoreRequest | null;
   triggerRestore: (item: SearchHistoryItem) => void;
   clearRestoreRequest: () => void;
@@ -158,6 +159,10 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   }, [user]);
 
+  const replaceHistory = useCallback((entries: SearchHistoryItem[]) => {
+    setHistory(entries.slice(0, 50));
+  }, []);
+
   const triggerRestore = useCallback((item: SearchHistoryItem) => {
     setRestoreRequest({
       id: Date.now(),
@@ -204,6 +209,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setSidebarOpen,
         recordHistory,
         clearHistory,
+        replaceHistory,
         restoreRequest,
         triggerRestore,
         clearRestoreRequest,
