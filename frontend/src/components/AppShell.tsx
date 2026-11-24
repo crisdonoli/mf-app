@@ -43,7 +43,7 @@ interface AppShellProps {
 // ============================================================================
 // Parámetros explícitos de tamaño del Logo y Navbar (modificables fácilmente)
 // ============================================================================
-const FOMC_LOGO_WIDTH_PX = 96;          // Ancho del logo MiningFOMC en el navbar (px)
+const FOMC_LOGO_WIDTH_PX = 100;          // Ancho del logo MiningFOMC en el navbar (px)
 const FOMC_LOGO_HEIGHT_PX = 52;         // Alto del logo MiningFOMC en el navbar (px)
 const FOMC_LOGO_VIEWBOX = "110 10 1300 715"; // Recorte exacto del lienzo SVG centrado (x y width height)
 const NAVBAR_HEIGHT_PX = 64;            // Altura de la barra de navegación superior (px)
