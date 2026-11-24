@@ -170,7 +170,7 @@ def _load_doc_participant_values(
     for doc in documents:
         dt = doc["doc_type"]
         md = doc["meeting_date"]
-        chunks, _ = eng.get_document_chunks(dt, md, limit=50000, offset=0)
+        chunks = eng.get_document_speaker_meta(dt, md)
         vals: dict[str, set[str]] = {c: set() for c in needed_criteria}
         for ch in chunks:
             for c in needed_criteria:
@@ -633,8 +633,7 @@ def compare_with_grouping_tree(
     def _get_doc_chunks(doc_type: str, meeting_date: str) -> list[dict[str, Any]]:
         k = (doc_type, meeting_date)
         if k not in doc_chunks_cache:
-            chs, _ = eng.get_document_chunks(doc_type, meeting_date, limit=50000, offset=0)
-            doc_chunks_cache[k] = chs
+            doc_chunks_cache[k] = eng.get_document_speaker_meta(doc_type, meeting_date)
         return doc_chunks_cache[k]
 
     radar_series: list[dict[str, Any]] = []

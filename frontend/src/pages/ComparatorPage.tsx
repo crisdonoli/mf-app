@@ -252,35 +252,50 @@ export const ComparatorPage: React.FC = () => {
       setError(null);
       return;
     }
-    setLoading(true);
-    setError(null);
-    api
-      .compareDocuments({
-        documents: basket.map((d) => ({ doc_type: d.doc_type, meeting_date: d.meeting_date })),
-        n_partitions: nPartitions,
-        data_source: dataSource,
-        metric,
-        normalization,
-        granularity,
-        macro_category: granularity === "subclass" ? macroCategory : null,
-        combine_by: groupingTree ? "tree" : "none",
-        agg_method: aggMethod,
-        grouping_tree: groupingTree,
-      })
-      .then((res) => {
-        setComparison(res);
-        setZoomWindow([0, 100]);
-        setHiddenCohortIds([]);
-        setRadarTickIdx(0);
-        if (res.categories.length > 0) {
-          setActiveTopicIds((prev) => {
-            const validPrev = prev.filter((id) => res.categories.some((c) => c.id === id));
-            return validPrev.length > 0 ? validPrev : [res.categories[0].id];
-          });
-        }
-      })
-      .catch((err) => setError(err instanceof Error ? err.message : "Comparison failed"))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setLoading(true);
+      setError(null);
+      api
+        .compareDocuments({
+          documents: basket.map((d) => ({ doc_type: d.doc_type, meeting_date: d.meeting_date })),
+          n_partitions: nPartitions,
+          data_source: dataSource,
+          metric,
+          normalization,
+          granularity,
+          macro_category: granularity === "subclass" ? macroCategory : null,
+          combine_by: groupingTree ? "tree" : "none",
+          agg_method: aggMethod,
+          grouping_tree: groupingTree,
+        })
+        .then((res) => {
+          if (cancelled) return;
+          setComparison(res);
+          setZoomWindow([0, 100]);
+          setHiddenCohortIds([]);
+          setRadarTickIdx(0);
+          if (res.categories.length > 0) {
+            setActiveTopicIds((prev) => {
+              const validPrev = prev.filter((id) => res.categories.some((c) => c.id === id));
+              return validPrev.length > 0 ? validPrev : [res.categories[0].id];
+            });
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setError(err instanceof Error ? err.message : "Comparison failed");
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    }, 150);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [
     basket,
     nPartitions,
@@ -335,38 +350,54 @@ export const ComparatorPage: React.FC = () => {
     }
 
     const nCats = comparison.categories.length;
+    const activeSliceNum = activeRadarTick?.slice_num || 1;
+    const activePeriodKey = activeRadarTick?.period_key || activeRadarTick?.meeting_date || "";
+    const activeMeetingDate = activeRadarTick?.meeting_date || "";
+    const activePeriodLabel = activeRadarTick?.period_label || "";
+    const sliceSuffix =
+      (activeRadarTick?.slice_total || nPartitions) > 1
+        ? ` · S${activeSliceNum}/${activeRadarTick?.slice_total || nPartitions}`
+        : "";
+
     const rawTraces = availableSeries.map((s) => {
-      // Average across partitions for each document/group so the radar reflects the full item profile
+      // Pick the partition matching the active chronological slice (fallback to closest partition)
+      const targetPart =
+        s.partitions.find((p) => p.partition_index === activeSliceNum) ||
+        s.partitions[Math.min(Math.max(0, activeSliceNum - 1), s.partitions.length - 1)] ||
+        s.partitions[0];
+
       const avgVals = new Array<number>(nCats).fill(0);
       for (let c = 0; c < nCats; c++) {
-        let sum = 0;
-        let cnt = 0;
-        for (const p of s.partitions) {
-          const v = p.values?.[c];
-          if (typeof v === "number" && Number.isFinite(v)) {
-            sum += v;
-            cnt += 1;
-          }
-        }
-        avgVals[c] = cnt > 0 ? sum / cnt : 0;
+        const v = targetPart?.values?.[c];
+        avgVals[c] = typeof v === "number" && Number.isFinite(v) ? v : 0;
       }
       const isTreeLeaf = s.doc_type === "tree_leaf";
-      const label = isTreeLeaf
+      const baseLabel = isTreeLeaf
         ? s.meeting_date
         : `${s.meeting_date} · ${s.doc_type_label || s.doc_type}`;
+      const label = `${baseLabel}${sliceSuffix}`;
       const yearMatch = String(s.meeting_date || "").match(/(19\d{2}|20\d{2})/);
       const yearKey = yearMatch ? yearMatch[1] : s.meeting_date || "Other";
+      const isFocused =
+        Boolean(activeRadarTick) &&
+        (s.meeting_date === activeMeetingDate ||
+          s.meeting_date === activePeriodKey ||
+          s.meeting_date === activePeriodLabel ||
+          (isTreeLeaf && Boolean(activePeriodLabel) && s.meeting_date.includes(activePeriodLabel)));
       return {
         label,
         yearKey,
         values: avgVals,
+        isFocused,
       };
     });
 
     const originalCount = rawTraces.length;
     const autoGroupedByYear = originalCount > 10;
+    const activeYearStr = String(activeMeetingDate || activePeriodKey);
+    const activeYearKey = /^\d{4}/.test(activeYearStr) ? activeYearStr.slice(0, 4) : "";
 
-    let finalTraces: Array<{ name: string; value: number[] }> = [];
+    let finalTraces: Array<{ name: string; value: number[]; isFocused: boolean }> = [];
     if (autoGroupedByYear) {
       const byYear = new Map<string, number[][]>();
       for (const tr of rawTraces) {
@@ -384,16 +415,65 @@ export const ComparatorPage: React.FC = () => {
           meanVec[c] = vecs.length > 0 ? sum / vecs.length : 0;
         }
         return {
-          name: `${yr} (${vecs.length} ${vecs.length === 1 ? "item" : "items"})`,
+          name: `${yr} (${vecs.length} ${vecs.length === 1 ? "item" : "items"})${sliceSuffix}`,
           value: meanVec,
+          isFocused: yr === activeYearKey,
         };
       });
+
+      const focusedRaw = rawTraces.filter((tr) => tr.isFocused);
+      if (focusedRaw.length > 0 && activeRadarTick) {
+        const pointVec = new Array<number>(nCats).fill(0);
+        for (let c = 0; c < nCats; c++) {
+          let sum = 0;
+          for (const f of focusedRaw) sum += f.values[c] ?? 0;
+          pointVec[c] = sum / focusedRaw.length;
+        }
+        finalTraces.unshift({
+          name: `Active: ${activeRadarTick.full_label}`,
+          value: pointVec,
+          isFocused: true,
+        });
+      } else if (activeRadarTick && resolvedTimeSeries.cohorts.length > 0) {
+        const pointVec = comparison.categories.map((cat) => {
+          let sum = 0;
+          let cnt = 0;
+          for (const coh of resolvedTimeSeries.cohorts) {
+            const v = coh.topic_series?.[cat.id]?.[safeRadarTickIdx];
+            if (typeof v === "number" && Number.isFinite(v)) {
+              sum += v;
+              cnt += 1;
+            }
+          }
+          return cnt > 0 ? sum / cnt : 0;
+        });
+        finalTraces.unshift({
+          name: `Active: ${activeRadarTick.full_label}`,
+          value: pointVec,
+          isFocused: true,
+        });
+      }
     } else {
-      finalTraces = rawTraces.map((tr) => ({ name: tr.label, value: tr.values }));
+      finalTraces = rawTraces.map((tr) => ({
+        name: tr.label,
+        value: tr.values,
+        isFocused: tr.isFocused,
+      }));
     }
 
     let globalMax = 0.01;
     let globalMin = 0;
+    for (const s of availableSeries) {
+      for (const p of s.partitions) {
+        for (const v of p.values || []) {
+          if (typeof v === "number" && Number.isFinite(v)) {
+            if (v > globalMax) globalMax = v;
+            if (v < globalMin) globalMin = v;
+          }
+        }
+      }
+    }
+    const hasAnyFocused = finalTraces.some((tr) => tr.isFocused);
     const plotted = finalTraces.map((tr, idx) => {
       tr.value.forEach((v) => {
         if (v > globalMax) globalMax = v;
@@ -402,6 +482,7 @@ export const ComparatorPage: React.FC = () => {
       return {
         name: tr.name,
         value: tr.value,
+        isFocused: tr.isFocused,
         color: DOCUMENT_COLORS[idx % DOCUMENT_COLORS.length],
       };
     });
@@ -457,13 +538,21 @@ export const ComparatorPage: React.FC = () => {
         {
           type: "radar",
           symbol: "circle",
-          symbolSize: 5,
           data: plotted.map((s) => ({
             name: s.name,
             value: s.value,
+            symbolSize: s.isFocused ? 7 : 4,
+            z: s.isFocused ? 10 : 2,
             itemStyle: { color: s.color },
-            lineStyle: { color: s.color, width: 2.2 },
-            areaStyle: { color: s.color, opacity: 0.1 },
+            lineStyle: {
+              color: s.color,
+              width: s.isFocused ? 3.2 : hasAnyFocused ? 1.6 : 2.2,
+              opacity: s.isFocused ? 1 : hasAnyFocused ? 0.65 : 0.9,
+            },
+            areaStyle: {
+              color: s.color,
+              opacity: s.isFocused ? 0.24 : hasAnyFocused ? 0.06 : 0.1,
+            },
           })),
         },
       ],
@@ -475,7 +564,7 @@ export const ComparatorPage: React.FC = () => {
       originalCount,
       plottedCount: plotted.length,
     };
-  }, [comparison, isDark]);
+  }, [comparison, isDark, activeRadarTick, resolvedTimeSeries.cohorts, safeRadarTickIdx, nPartitions]);
 
   // Compute Meeting-Averaged Timeline (used by default when Splits are NOT expanded)
   const averagedTimeSeries = useMemo<{
@@ -793,6 +882,8 @@ S${t.slice_num}`;
           xAxisIndex: 0,
           start: zoomWindow[0],
           end: zoomWindow[1],
+          zoomOnMouseWheel: "ctrl",
+          moveOnMouseWheel: false,
         },
         {
           type: "slider",
@@ -1551,7 +1642,12 @@ S${t.slice_num}`;
           )}
 
           {/* Synchronized Interactive Radar Chart */}
-          <div className="panel p-4">
+          <div className="panel p-4 relative">
+            {loading && comparison && (
+              <div className="absolute top-3 right-3 z-10 px-2.5 py-1 rounded-sm bg-surface-alt/90 border border-border text-[10px] font-mono text-muted">
+                Updating partitions...
+              </div>
+            )}
             {basket.length === 0 ? (
               <div className="h-[420px] flex flex-col items-center justify-center text-center p-6">
                 <p className="text-sm font-medium text-ink">No documents in comparison basket</p>
@@ -1560,7 +1656,7 @@ S${t.slice_num}`;
                   and chronological slice trajectories.
                 </p>
               </div>
-            ) : loading ? (
+            ) : loading && !comparison ? (
               <div className="h-[420px] flex items-center justify-center text-xs font-mono text-muted">
                 Computing chronological N-partition comparison...
               </div>

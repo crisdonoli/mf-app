@@ -37,15 +37,23 @@ except ImportError:  # pragma: no cover
 _YEAR_RE = re.compile(r"year=(\d{4})")
 _SUBCHUNK_RE = re.compile(r"_s\d+$")
 
-# Lightweight module-level cache for speaker autocomplete catalog and corpus stats keyed by source paths
+# Lightweight module-level cache for speaker autocomplete catalog, corpus stats, and yearly slices keyed by source paths
 _SPEAKER_CATALOG_CACHE: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
 _CORPUS_STATS_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
+_DOC_IDS_BY_YEAR_CACHE: dict[tuple[str, str, str], dict[str, list[str]]] = {}
+_DOC_SPEAKER_META_CACHE: dict[tuple[str, str, str], dict[str, list[dict[str, Any]]]] = {}
+_SIM_YEAR_CACHE: dict[tuple[str, str, str], tuple[dict[str, np.ndarray], list[str]]] = {}
+_ZS_YEAR_CACHE: dict[tuple[str, str, str], tuple[dict[str, np.ndarray], list[str]]] = {}
 
 
 def clear_speaker_catalog_cache() -> None:
-    """Reset the cached speaker autocomplete catalog and corpus stats (used in tests or reload)."""
+    """Reset the cached speaker autocomplete catalog, corpus stats, and partition caches (used in tests or reload)."""
     _SPEAKER_CATALOG_CACHE.clear()
     _CORPUS_STATS_CACHE.clear()
+    _DOC_IDS_BY_YEAR_CACHE.clear()
+    _DOC_SPEAKER_META_CACHE.clear()
+    _SIM_YEAR_CACHE.clear()
+    _ZS_YEAR_CACHE.clear()
 
 
 def _norm_speaker(name: str) -> str:
@@ -1048,6 +1056,118 @@ class ParquetQueryEngine:
                 )
         return siblings
 
+    # ------------------------------------------------------------------ Fast Ordered Chunk IDs (No text_content I/O)
+    def get_ordered_chunk_ids(self, doc_type: str, meeting_date: str) -> list[str]:
+        """Return ordered ``chunk_id`` list for ``(doc_type, meeting_date)`` without reading ``text_content``."""
+        year = meeting_date[:4]
+        meta_dir = self.settings.resolve_text_metadata_dir()
+        cache_key = (str(meta_dir), doc_type, year)
+
+        if cache_key not in _DOC_IDS_BY_YEAR_CACHE:
+            by_date: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
+            if doc_type == "agenda_items" and not (meta_dir / "doc_type=agenda_items").is_dir():
+                ag_dir = self.settings.resolve_agenda_items_dir() / f"year={year}"
+                if ag_dir.is_dir():
+                    for pq_path in sorted(ag_dir.glob("part-*.parquet")):
+                        tbl = pq.read_table(pq_path, columns=["id_agenda", "date", "sec_n", "subsec_n"])
+                        for r in tbl.to_pylist():
+                            d = str(r.get("date") or "")
+                            if not d:
+                                continue
+                            sec = int(r.get("sec_n") or 0)
+                            sub = int(r.get("subsec_n") or 0)
+                            raw_id = str(r.get("id_agenda") or "").strip()
+                            cid = (
+                                raw_id
+                                if re.search(r"_\d{2}_\d{2}$", raw_id)
+                                else f"agendas_{d}_{sec:02d}_{sub:02d}"
+                            )
+                            by_date[d].append((sec * 100 + sub, 0, cid))
+            else:
+                yr_dir = meta_dir / f"doc_type={doc_type}" / f"year={year}"
+                if yr_dir.is_dir():
+                    for pq_path in sorted(yr_dir.glob("part-*.parquet")):
+                        schema_names = set(pq.read_schema(pq_path).names)
+                        cols = [c for c in ("chunk_id", "meeting_date", "sequence_num", "chunk_sub_id") if c in schema_names]
+                        tbl = pq.read_table(pq_path, columns=cols)
+                        cids = tbl["chunk_id"].to_pylist() if "chunk_id" in cols else []
+                        mdates = tbl["meeting_date"].to_pylist() if "meeting_date" in cols else [""] * len(cids)
+                        seqs = tbl["sequence_num"].to_pylist() if "sequence_num" in cols else [0] * len(cids)
+                        subs = tbl["chunk_sub_id"].to_pylist() if "chunk_sub_id" in cols else [0] * len(cids)
+                        for cid, md, seq, sub in zip(cids, mdates, seqs, subs):
+                            if md and cid:
+                                by_date[str(md)].append((int(seq or 0), int(sub or 0), str(cid)))
+
+            ordered_by_date: dict[str, list[str]] = {}
+            for d, items in by_date.items():
+                items.sort(key=lambda x: (x[0], x[1]))
+                ordered_by_date[d] = [x[2] for x in items]
+            if len(_DOC_IDS_BY_YEAR_CACHE) > 256:
+                _DOC_IDS_BY_YEAR_CACHE.clear()
+            _DOC_IDS_BY_YEAR_CACHE[cache_key] = ordered_by_date
+
+        return _DOC_IDS_BY_YEAR_CACHE[cache_key].get(meeting_date, [])
+
+    def get_document_speaker_meta(self, doc_type: str, meeting_date: str) -> list[dict[str, Any]]:
+        """Return ordered lightweight chunk metadata (without ``text_content``) for speaker/role grouping."""
+        year = meeting_date[:4]
+        meta_dir = self.settings.resolve_text_metadata_dir()
+        cache_key = (str(meta_dir), doc_type, year)
+
+        if cache_key not in _DOC_SPEAKER_META_CACHE:
+            by_date: dict[str, list[tuple[int, int, dict[str, Any]]]] = defaultdict(list)
+            if doc_type == "agenda_items" and not (meta_dir / "doc_type=agenda_items").is_dir():
+                for cid in self.get_ordered_chunk_ids(doc_type, meeting_date):
+                    by_date[meeting_date].append(
+                        (0, 0, {"chunk_id": cid, "speaker": "", "speaker_role": ""})
+                    )
+            else:
+                yr_dir = meta_dir / f"doc_type={doc_type}" / f"year={year}"
+                if yr_dir.is_dir():
+                    for pq_path in sorted(yr_dir.glob("part-*.parquet")):
+                        schema_names = set(pq.read_schema(pq_path).names)
+                        cols = [
+                            c
+                            for c in (
+                                "chunk_id",
+                                "meeting_date",
+                                "sequence_num",
+                                "chunk_sub_id",
+                                "speaker",
+                                "speaker_role",
+                            )
+                            if c in schema_names
+                        ]
+                        tbl = pq.read_table(pq_path, columns=cols)
+                        cids = tbl["chunk_id"].to_pylist() if "chunk_id" in cols else []
+                        mdates = tbl["meeting_date"].to_pylist() if "meeting_date" in cols else [""] * len(cids)
+                        seqs = tbl["sequence_num"].to_pylist() if "sequence_num" in cols else [0] * len(cids)
+                        subs = tbl["chunk_sub_id"].to_pylist() if "chunk_sub_id" in cols else [0] * len(cids)
+                        spkrs = tbl["speaker"].to_pylist() if "speaker" in cols else [""] * len(cids)
+                        roles = tbl["speaker_role"].to_pylist() if "speaker_role" in cols else [""] * len(cids)
+                        for cid, md, seq, sub, sp, rl in zip(cids, mdates, seqs, subs, spkrs, roles):
+                            if md and cid:
+                                by_date[str(md)].append(
+                                    (
+                                        int(seq or 0),
+                                        int(sub or 0),
+                                        {
+                                            "chunk_id": str(cid),
+                                            "speaker": str(sp or ""),
+                                            "speaker_role": str(rl or ""),
+                                        },
+                                    )
+                                )
+            ordered_meta: dict[str, list[dict[str, Any]]] = {}
+            for d, items in by_date.items():
+                items.sort(key=lambda x: (x[0], x[1]))
+                ordered_meta[d] = [x[2] for x in items]
+            if len(_DOC_SPEAKER_META_CACHE) > 256:
+                _DOC_SPEAKER_META_CACHE.clear()
+            _DOC_SPEAKER_META_CACHE[cache_key] = ordered_meta
+
+        return _DOC_SPEAKER_META_CACHE[cache_key].get(meeting_date, [])
+
     # ------------------------------------------------------------------ Similarity Matrix
     def load_raw_similarity_slice(
         self,
@@ -1060,77 +1180,70 @@ class ParquetQueryEngine:
         if not sim_year_dir.is_dir():
             return [], np.empty((0, 0), dtype=np.float32), []
 
-        sim_files = sorted(sim_year_dir.glob("part-*.parquet"))
-        if not sim_files:
-            return [], np.empty((0, 0), dtype=np.float32), []
+        ordered_ids = self.get_ordered_chunk_ids(doc_type, meeting_date)
+        cache_key = (str(sim_root), doc_type, year)
 
-        chunks, _ = self.get_document_chunks(doc_type, meeting_date, limit=50000, offset=0)
-        ordered_ids = [c["chunk_id"] for c in chunks]
-        id_set = set(ordered_ids)
+        if cache_key not in _SIM_YEAR_CACHE:
+            sim_files = sorted(sim_year_dir.glob("part-*.parquet"))
+            if not sim_files:
+                return [], np.empty((0, 0), dtype=np.float32), []
 
-        raw_labels: list[str] | None = None
-        matched_vecs: dict[str, list[np.ndarray]] = defaultdict(list)
+            raw_labels: list[str] | None = None
+            vec_lists: dict[str, list[np.ndarray]] = defaultdict(list)
 
-        for pq_path in sim_files:
-            pf = pq.ParquetFile(pq_path)
-            meta = pf.schema_arrow.metadata or {}
-            if b"similarity" in meta and raw_labels is None:
-                try:
-                    info = json.loads(meta[b"similarity"].decode("utf-8"))
-                    if isinstance(info.get("labels"), list):
-                        raw_labels = [str(x) for x in info["labels"]]
-                except Exception:
-                    pass
+            for pq_path in sim_files:
+                pf = pq.ParquetFile(pq_path)
+                meta = pf.schema_arrow.metadata or {}
+                if b"similarity" in meta and raw_labels is None:
+                    try:
+                        info = json.loads(meta[b"similarity"].decode("utf-8"))
+                        if isinstance(info.get("labels"), list):
+                            raw_labels = [str(x) for x in info["labels"]]
+                    except Exception:
+                        pass
 
-            table = ds.dataset(pq_path, format="parquet").to_table(
-                columns=["chunk_id", "similarity"],
-                filter=ds.field("chunk_id").isin(list(id_set)) if id_set else None,
-            )
-            # Fallback if similarity file still has unpooled _s0000 sub-chunks
-            if table.num_rows == 0 and id_set:
-                full_tbl = pq.read_table(pq_path, columns=["chunk_id", "similarity"])
-                mask = pc.match_substring(full_tbl["chunk_id"], meeting_date)
-                table = full_tbl.filter(mask)
+                table = pf.read(columns=["chunk_id", "similarity"])
                 if table.num_rows == 0:
-                    table = full_tbl
+                    continue
 
-            if table.num_rows == 0:
-                continue
-
-            cids = table["chunk_id"].to_pylist()
-            sim_col = table["similarity"].combine_chunks()
-            if pa.types.is_fixed_size_list(sim_col.type):
-                width = sim_col.type.list_size
-                vals = sim_col.values.to_numpy(zero_copy_only=False).astype(np.float32, copy=False)
-                mat = vals.reshape(len(cids), width)
-            else:
-                mat = np.asarray(sim_col.to_pylist(), dtype=np.float32)
-
-            for idx, cid in enumerate(cids):
-                cid_str = str(cid)
-                if cid_str in id_set:
-                    matched_vecs[cid_str].append(mat[idx])
+                cids = table["chunk_id"].to_pylist()
+                sim_col = table["similarity"].combine_chunks()
+                if pa.types.is_fixed_size_list(sim_col.type):
+                    width = sim_col.type.list_size
+                    vals = sim_col.values.to_numpy(zero_copy_only=False).astype(np.float32, copy=False)
+                    mat = vals.reshape(len(cids), width)
                 else:
-                    base_cid = _SUBCHUNK_RE.sub("", cid_str)
-                    if not id_set or base_cid in id_set:
-                        matched_vecs[base_cid].append(mat[idx])
+                    mat = np.asarray(sim_col.to_pylist(), dtype=np.float32)
 
-        if not matched_vecs:
+                for idx, cid in enumerate(cids):
+                    cid_str = str(cid)
+                    vec_lists[cid_str].append(mat[idx])
+                    base_cid = _SUBCHUNK_RE.sub("", cid_str)
+                    if base_cid != cid_str:
+                        vec_lists[base_cid].append(mat[idx])
+
+            vec_map: dict[str, np.ndarray] = {
+                cid: (vecs[0] if len(vecs) == 1 else np.mean(np.vstack(vecs), axis=0, dtype=np.float32))
+                for cid, vecs in vec_lists.items()
+            }
+            sample_width = next(iter(vec_map.values())).shape[0] if vec_map else 13
+            col_labels = resolve_column_labels(raw_labels, sample_width)
+            if len(_SIM_YEAR_CACHE) > 128:
+                _SIM_YEAR_CACHE.clear()
+            _SIM_YEAR_CACHE[cache_key] = (vec_map, col_labels)
+
+        vec_map, col_labels = _SIM_YEAR_CACHE[cache_key]
+        if not vec_map:
             return [], np.empty((0, 0), dtype=np.float32), []
 
-        matched_map: dict[str, np.ndarray] = {
-            cid: (vecs[0] if len(vecs) == 1 else np.mean(np.vstack(vecs), axis=0, dtype=np.float32))
-            for cid, vecs in matched_vecs.items()
-        }
         final_ids = (
-            [cid for cid in ordered_ids if cid in matched_map]
+            [cid for cid in ordered_ids if cid in vec_map]
             if ordered_ids
-            else sorted(matched_map.keys())
+            else [cid for cid in sorted(vec_map.keys()) if meeting_date in cid]
         )
         if not final_ids:
             return [], np.empty((0, 0), dtype=np.float32), []
-        matrix = np.vstack([matched_map[cid] for cid in final_ids]).astype(np.float32)
-        col_labels = resolve_column_labels(raw_labels, matrix.shape[1])
+        matrix = np.vstack([vec_map[cid] for cid in final_ids]).astype(np.float32)
         return final_ids, matrix, col_labels
 
     # ------------------------------------------------------------------ Zero-Shot Labels
@@ -1223,6 +1336,93 @@ class ParquetQueryEngine:
                 }
             )
         return ordered, score_cols
+
+    def load_raw_zero_shot_matrix(
+        self,
+        doc_type: str,
+        meeting_date: str,
+    ) -> tuple[np.ndarray, list[str]]:
+        """Fast cached zero-shot probability matrix loader for Comparator (avoids reading text_content)."""
+        labels_dir = self.settings.resolve_labels_dir()
+        if not labels_dir.is_dir():
+            return np.empty((0, 0), dtype=np.float32), []
+
+        ordered_ids = self.get_ordered_chunk_ids(doc_type, meeting_date)
+        if not ordered_ids:
+            return np.empty((0, 0), dtype=np.float32), []
+
+        year = meeting_date[:4]
+        part_dir = labels_dir / f"doc_type={doc_type}" / f"year={year}"
+        cache_key = (str(labels_dir), doc_type, year if part_dir.is_dir() else "_flat_")
+
+        if cache_key not in _ZS_YEAR_CACHE:
+            if part_dir.is_dir():
+                candidates = sorted(part_dir.glob("part-*.parquet"))
+            else:
+                candidates = sorted(labels_dir.glob("labels_all_subclasses.parquet"))
+                if not candidates:
+                    candidates = sorted(labels_dir.glob("labels-*.parquet"))
+                if not candidates:
+                    candidates = sorted(labels_dir.glob("*.parquet"))
+            if not candidates:
+                return np.empty((0, 0), dtype=np.float32), []
+
+            target_file = max(candidates, key=lambda p: p.stat().st_mtime)
+            schema_names = pq.read_schema(target_file).names
+            if "chunk_id" not in schema_names:
+                return np.empty((0, 0), dtype=np.float32), []
+
+            reserved = {
+                "chunk_id", "doc_type", "model", "label", "label_name", "prob_max",
+                "subclass_label_name", "subclass_prob_max",
+                "p_relevant", "p_irrelevant",
+                "relevance_prob", "meeting_date", "speaker", "text_content",
+                "human_relevance_label", "human_topic_label",
+            }
+            score_cols = [c for c in schema_names if c not in reserved]
+            if not score_cols:
+                return np.empty((0, 0), dtype=np.float32), []
+
+            table = pq.read_table(target_file, columns=["chunk_id", *score_cols])
+            if table.num_rows == 0:
+                _ZS_YEAR_CACHE[cache_key] = ({}, score_cols)
+            else:
+                cids = table["chunk_id"].to_pylist()
+                col_arrays = [
+                    np.nan_to_num(
+                        table[col].to_numpy(zero_copy_only=False).astype(np.float32, copy=False),
+                        nan=0.0,
+                    )
+                    for col in score_cols
+                ]
+                mat_all = np.column_stack(col_arrays) if col_arrays else np.empty((len(cids), 0), dtype=np.float32)
+                if "monetary_aggregates" in score_cols and "gdp_activity" in score_cols:
+                    ma_idx = score_cols.index("monetary_aggregates")
+                    gdp_idx = score_cols.index("gdp_activity")
+                    zero_mask = (mat_all[:, ma_idx] == 0.0) & (mat_all[:, gdp_idx] > 0.0)
+                    mat_all[zero_mask, ma_idx] = mat_all[zero_mask, gdp_idx]
+
+                vec_lists: dict[str, list[np.ndarray]] = defaultdict(list)
+                for idx, cid in enumerate(cids):
+                    cid_str = str(cid)
+                    vec_lists[cid_str].append(mat_all[idx])
+                    base_cid = _SUBCHUNK_RE.sub("", cid_str)
+                    if base_cid != cid_str:
+                        vec_lists[base_cid].append(mat_all[idx])
+
+                vec_map: dict[str, np.ndarray] = {
+                    cid: (vecs[0] if len(vecs) == 1 else np.mean(np.vstack(vecs), axis=0, dtype=np.float32))
+                    for cid, vecs in vec_lists.items()
+                }
+                if len(_ZS_YEAR_CACHE) > 64:
+                    _ZS_YEAR_CACHE.clear()
+                _ZS_YEAR_CACHE[cache_key] = (vec_map, score_cols)
+
+        vec_map, score_cols = _ZS_YEAR_CACHE[cache_key]
+        matched_vecs = [vec_map[cid] for cid in ordered_ids if cid in vec_map]
+        if not matched_vecs:
+            return np.empty((0, 0), dtype=np.float32), []
+        return np.vstack(matched_vecs).astype(np.float32), score_cols
 
     # ------------------------------------------------------------------ Relevance Scores
     def load_relevance_slice(

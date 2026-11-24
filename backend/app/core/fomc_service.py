@@ -554,14 +554,8 @@ def _extract_raw_matrix_for_source(
 ) -> tuple[np.ndarray, list[str], str]:
     eng = _engine(settings)
     if data_source == "zero_shot":
-        rows, score_cols = eng.load_zero_shot_slice(doc_type, meeting_date)
-        if rows and score_cols:
-            mat = np.zeros((len(rows), len(score_cols)), dtype=np.float32)
-            for i, r in enumerate(rows):
-                for j, col in enumerate(score_cols):
-                    mat[i, j] = float(r["scores"].get(col, 0.0))
-            return mat, score_cols, "zero_shot"
-        return np.empty((0, 0), dtype=np.float32), [], "zero_shot"
+        mat, score_cols = eng.load_raw_zero_shot_matrix(doc_type, meeting_date)
+        return mat, score_cols, "zero_shot"
 
     _, raw_mat, raw_labels = eng.load_raw_similarity_slice(doc_type, meeting_date)
     return raw_mat, raw_labels, "similarity"
@@ -770,7 +764,7 @@ def compare_documents(
                 else ""
             )
             part_mode = eff_sub_group if combine_by == "year_range" else combine_by
-            chunks, _ = eng.get_document_chunks(doc_type, meeting_date, limit=50000, offset=0)
+            chunks = eng.get_document_speaker_meta(doc_type, meeting_date)
             n_rows = min(len(chunks), proj_mat.shape[0])
             per_group_rows: dict[str, list[np.ndarray]] = defaultdict(list)
             for i in range(n_rows):
