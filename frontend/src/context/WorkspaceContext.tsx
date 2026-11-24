@@ -2,7 +2,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { api } from "../lib/api";
-import type { CompareDocumentRef, SearchHistoryItem } from "../types/api";
+import type { CompareDocumentRef, DbVersionInfo, SearchHistoryItem } from "../types/api";
 import { useAuth } from "./AuthContext";
 
 const HISTORY_STORAGE_KEY = "miningfomc_search_history_v1";
@@ -48,6 +48,11 @@ interface WorkspaceContextValue {
   addManyToBasket: (docs: CompareDocumentRef[]) => void;
   removeFromBasket: (docType: string, meetingDate: string) => void;
   clearBasket: () => void;
+  activeDbVersion: DbVersionInfo | null;
+  availableDbVersions: DbVersionInfo[];
+  switchingDbVersion: boolean;
+  switchDbVersion: (version: string) => Promise<void>;
+  dbVersionRevision: number;
 }
 
 const WorkspaceContext = createContext<WorkspaceContextValue | undefined>(undefined);
@@ -71,6 +76,32 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     loadLocal<CompareDocumentRef[]>(BASKET_STORAGE_KEY, [])
   );
   const [restoreRequest, setRestoreRequest] = useState<ExplorerRestoreRequest | null>(null);
+  const [activeDbVersion, setActiveDbVersion] = useState<DbVersionInfo | null>(null);
+  const [availableDbVersions, setAvailableDbVersions] = useState<DbVersionInfo[]>([]);
+  const [switchingDbVersion, setSwitchingDbVersion] = useState<boolean>(false);
+  const [dbVersionRevision, setDbVersionRevision] = useState<number>(0);
+
+  useEffect(() => {
+    api
+      .getDbVersions()
+      .then((res) => {
+        setActiveDbVersion(res.active);
+        setAvailableDbVersions(res.versions);
+      })
+      .catch(() => {});
+  }, []);
+
+  const switchDbVersion = useCallback(async (version: string) => {
+    setSwitchingDbVersion(true);
+    try {
+      const res = await api.selectDbVersion(version);
+      setActiveDbVersion(res.active);
+      setAvailableDbVersions(res.versions);
+      setDbVersionRevision((r) => r + 1);
+    } finally {
+      setSwitchingDbVersion(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (!user) return;
@@ -182,6 +213,11 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         addManyToBasket,
         removeFromBasket,
         clearBasket,
+        activeDbVersion,
+        availableDbVersions,
+        switchingDbVersion,
+        switchDbVersion,
+        dbVersionRevision,
       }}
     >
       {children}

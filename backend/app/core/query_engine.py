@@ -1121,8 +1121,6 @@ class ParquetQueryEngine:
             return [], []
         chunk_lookup = {c["chunk_id"]: c for c in chunks}
         id_list = list(chunk_lookup.keys())
-        base_id_list = sorted({_SUBCHUNK_RE.sub("", cid) for cid in id_list})
-        query_ids = list({*id_list, *base_id_list})
 
         year = meeting_date[:4]
         part_dir = labels_dir / f"doc_type={doc_type}" / f"year={year}"
@@ -1143,7 +1141,7 @@ class ParquetQueryEngine:
             return [], []
 
         table = ds.dataset(target_file, format="parquet").to_table(
-            filter=ds.field("chunk_id").isin(query_ids)
+            filter=ds.field("chunk_id").isin(id_list)
         )
         if table.num_rows == 0:
             return [], []
@@ -1180,7 +1178,7 @@ class ParquetQueryEngine:
 
         ordered: list[dict[str, Any]] = []
         for cid in id_list:
-            matched = raw_by_id.get(cid) or raw_by_id.get(_SUBCHUNK_RE.sub("", cid))
+            matched = raw_by_id.get(cid)
             if matched is None:
                 continue
             chunk_meta = chunk_lookup.get(cid, {})
@@ -1234,9 +1232,11 @@ class ParquetQueryEngine:
                 or cols_low.get("score")
             )
             if id_col and p_col:
+                base_ids = {_SUBCHUNK_RE.sub("", cid) for cid in id_list}
+                query_rel_ids = list({*id_list, *base_ids})
                 table = ds.dataset(target_rel_file, format="parquet").to_table(
                     columns=[id_col, p_col],
-                    filter=ds.field(id_col).isin(id_list),
+                    filter=ds.field(id_col).isin(query_rel_ids),
                 )
                 for r in table.to_pylist():
                     val = r.get(p_col)
@@ -1255,9 +1255,12 @@ class ParquetQueryEngine:
 
         ordered = []
         for cid in id_list:
-            if cid not in rel_map:
+            raw_p = rel_map.get(cid)
+            if raw_p is None:
+                raw_p = rel_map.get(_SUBCHUNK_RE.sub("", cid))
+            if raw_p is None:
                 continue
-            p_rel = max(0.0, min(1.0, rel_map[cid]))
+            p_rel = max(0.0, min(1.0, raw_p))
             p_irr = max(0.0, min(1.0, 1.0 - p_rel))
             ch = chunk_lookup[cid]
             ordered.append(

@@ -10,6 +10,7 @@ import type {
   CompareResponse,
   CorpusStats,
   DataSourceMode,
+  DbVersionsResponse,
   DocTypeOption,
   FavoriteItem,
   FavoriteList,
@@ -92,6 +93,12 @@ function qs(params: Record<string, string | number | boolean | undefined | null>
 
 export const api = {
   getStats: () => request<CorpusStats>("/api/stats"),
+  getDbVersions: () => request<DbVersionsResponse>("/api/db-versions"),
+  selectDbVersion: (version: string) =>
+    request<DbVersionsResponse>("/api/db-versions/select", {
+      method: "POST",
+      body: JSON.stringify({ version }),
+    }),
   getTaxonomy: () => request<TaxonomyResponse>("/api/taxonomy"),
   getDocTypes: () => request<{ doc_types: DocTypeOption[] }>("/api/doc-types"),
 

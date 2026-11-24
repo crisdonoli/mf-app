@@ -8,11 +8,13 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 from ..auth.security import get_current_user
-from ..config import get_settings
+from ..config import get_settings, switch_active_db_version
 from ..core import (
+    clear_speaker_catalog_cache,
     get_corpus_stats,
     get_document_chunks,
     get_meeting_bundle,
@@ -27,6 +29,10 @@ from ..core.fomc_service import get_classification_inspector
 router = APIRouter(prefix="/api", tags=["Explorer & Corpus"])
 
 
+class SelectDbVersionRequest(BaseModel):
+    version: str
+
+
 @router.get("/health")
 def health_check():
     """Service liveness and full Parquet dataset discovery diagnostics."""
@@ -37,6 +43,7 @@ def health_check():
         "engine": stats["engine"],
         "parquet_files": stats["parquet_files"],
         "db_version": cfg.resolve_db_version_info(),
+        "available_db_versions": cfg.discover_available_db_versions(),
         "datasets": cfg.get_dataset_diagnostics(),
     }
 
@@ -44,9 +51,37 @@ def health_check():
 @router.get("/stats")
 def corpus_stats():
     """Return high-level corpus statistics for the public Landing Page."""
+    cfg = get_settings()
     stats = get_corpus_stats()
-    stats["db_version"] = get_settings().resolve_db_version_info()
+    stats["db_version"] = cfg.resolve_db_version_info()
+    stats["available_db_versions"] = cfg.discover_available_db_versions()
     return stats
+
+
+@router.get("/db-versions")
+def list_db_versions():
+    """Dynamically list all FOMC database versions present in the repository."""
+    cfg = get_settings()
+    return {
+        "active": cfg.resolve_db_version_info(),
+        "versions": cfg.discover_available_db_versions(),
+    }
+
+
+@router.post("/db-versions/select")
+def select_db_version(body: SelectDbVersionRequest):
+    """Switch the active FOMC database version dynamically across the application."""
+    try:
+        active_info = switch_active_db_version(body.version)
+        clear_speaker_catalog_cache()
+        cfg = get_settings()
+        return {
+            "active": active_info,
+            "versions": cfg.discover_available_db_versions(),
+            "stats": get_corpus_stats(),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/taxonomy")

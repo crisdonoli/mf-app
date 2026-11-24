@@ -1,17 +1,17 @@
 {
   "schema_version": 1,
   "db_name": "mining-fomc-app-db",
-  "version": "1.2.0",
-  "tag": "v1.2.0",
-  "fingerprint": "c811cc1160ee2c18",
-  "generated_at": "2026-11-24T14:15:16Z",
+  "version": "1.3.0",
+  "tag": "v1.3.0",
+  "fingerprint": "e559dd7a61ab42e4",
+  "generated_at": "2026-11-24T14:49:41Z",
   "horizon_years": [
     1976,
     2020
   ],
-  "total_indexed_chunks": 744713,
+  "total_indexed_chunks": 2318062,
   "total_files": 1761,
-  "total_bytes": 196046001,
-  "total_human_size": "186.96 MB",
-  "notes": "Corpus-wide relevance probabilities (p_relevant) across all 19 doc_types + sentence-chunked speeches"
+  "total_bytes": 272497550,
+  "total_human_size": "259.87 MB",
+  "notes": "Canonical per-doc_type chunking (transcripts by turn, agenda by item, books/minutes/rest by sentence, presentations with [FIG]/[TABLE] tokens) + per-sentence topic & relevance scores."
 }

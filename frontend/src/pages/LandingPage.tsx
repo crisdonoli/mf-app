@@ -4,11 +4,13 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, Database, GitCompare, Layers, Lock, Search, Sparkles } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
+import { useWorkspace } from "../context/WorkspaceContext";
 import { api } from "../lib/api";
 import type { CorpusStats, TaxonomyResponse } from "../types/api";
 
 export const LandingPage: React.FC = () => {
   const { user } = useAuth();
+  const { dbVersionRevision } = useWorkspace();
   const [stats, setStats] = useState<CorpusStats | null>(null);
   const [taxonomy, setTaxonomy] = useState<TaxonomyResponse | null>(null);
 
@@ -17,7 +19,7 @@ export const LandingPage: React.FC = () => {
     if (user) {
       api.getTaxonomy().then(setTaxonomy).catch(() => {});
     }
-  }, [user]);
+  }, [user, dbVersionRevision]);
 
   const pipelineSteps = [
     {

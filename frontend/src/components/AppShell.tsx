@@ -7,6 +7,7 @@ import {
   BookOpen,
   CheckCheck,
   Clock,
+  Database,
   FileText,
   FolderKanban,
   GitCompare,
@@ -37,8 +38,18 @@ interface AppShellProps {
 export const AppShell: React.FC<AppShellProps> = ({ children }) => {
   const { user } = useAuth();
   const { isDark, toggleTheme } = useTheme();
-  const { history, sidebarOpen, setSidebarOpen, triggerRestore, clearHistory, basket } =
-    useWorkspace();
+  const {
+    history,
+    sidebarOpen,
+    setSidebarOpen,
+    triggerRestore,
+    clearHistory,
+    basket,
+    activeDbVersion,
+    availableDbVersions,
+    switchingDbVersion,
+    switchDbVersion,
+  } = useWorkspace();
   const navigate = useNavigate();
 
   const [notifOpen, setNotifOpen] = useState(false);
@@ -124,6 +135,39 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
               <Users className="w-3.5 h-3.5" />
               Team
             </NavLink>
+
+            {/* Dynamic Database Version Selector in Navbar */}
+            {availableDbVersions.length > 0 && (
+              <div
+                className="flex items-center gap-1.5 px-2 py-1 border border-border rounded-sm bg-canvas text-xs font-mono ml-1"
+                title={
+                  activeDbVersion?.notes
+                    ? `DB ${activeDbVersion.tag} — ${activeDbVersion.notes}`
+                    : "Select active FOMC database version"
+                }
+              >
+                <Database className="w-3.5 h-3.5 text-accent shrink-0" />
+                <span className="hidden md:inline text-[11px] text-muted uppercase">DB:</span>
+                <select
+                  aria-label="Select Database Version"
+                  disabled={switchingDbVersion}
+                  value={activeDbVersion?.version || availableDbVersions[0]?.version || ""}
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      switchDbVersion(e.target.value);
+                    }
+                  }}
+                  className="bg-transparent text-ink font-semibold text-xs focus:outline-none cursor-pointer pr-1"
+                >
+                  {availableDbVersions.map((v) => (
+                    <option key={v.version} value={v.version} className="bg-surface text-ink">
+                      {v.tag}
+                      {v.total_human_size ? ` (${v.total_human_size})` : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             {user ? (
               <>

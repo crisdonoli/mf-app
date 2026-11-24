@@ -591,7 +591,7 @@ class TestCompactCommonAppDBIntegration(unittest.TestCase):
         self.assertEqual(h.status_code, 200)
         h_json = h.json()
         self.assertIn("db_version", h_json)
-        self.assertIn(h_json["db_version"]["version"], ("1.0.0", "1.1.0", "1.2.0"))
+        self.assertIn(h_json["db_version"]["version"], ("1.0.0", "1.1.0", "1.2.0", "1.3.0"))
         diag = h_json["datasets"]
         for key in (
             "data_dir",
@@ -663,8 +663,46 @@ class TestCompactCommonAppDBIntegration(unittest.TestCase):
 
         sp_zs = self.client.get("/api/explorer/documents/speeches/1995-08-10/zero-shot", headers=hdrs)
         self.assertEqual(sp_zs.status_code, 200)
-        self.assertTrue(sp_zs.json()["available"])
-        self.assertGreater(sp_zs.json()["total_classified"], 20)
+        # Since speeches zero-shot has not been re-computed at sentence level (_s0000) in Colab yet,
+        # exact chunk_id matching returns available=False (no similarity patch or parent duplication).
+        self.assertFalse(sp_zs.json()["available"])
+        self.assertEqual(sp_zs.json()["total_classified"], 0)
+
+        # Verify dynamic database version discovery & switching endpoints
+        v_list = self.client.get("/api/db-versions")
+        self.assertEqual(v_list.status_code, 200)
+        v_data = v_list.json()
+        self.assertIn("active", v_data)
+        self.assertGreaterEqual(len(v_data["versions"]), 1)
+
+        active_ver = v_data["active"]["version"]
+        v_sel = self.client.post("/api/db-versions/select", json={"version": active_ver})
+        self.assertEqual(v_sel.status_code, 200)
+        self.assertEqual(v_sel.json()["active"]["version"], active_ver)
+
+        # Verify canonical chunking rules across document types:
+        # 1) books (greenbook) -> sentence-level (_s0000)
+        gb_chunks = self.client.get("/api/explorer/documents/greenbook/1997-02-04/chunks", headers=hdrs).json()
+        self.assertGreater(gb_chunks["total"], 100)
+        self.assertRegex(gb_chunks["chunks"][0]["chunk_id"], r"_s\d{4}$")
+
+        # 2) minutes -> sentence-level (_s0000)
+        min_chunks = self.client.get("/api/explorer/documents/minutes/1997-02-04/chunks", headers=hdrs).json()
+        self.assertGreater(min_chunks["total"], 50)
+        self.assertRegex(min_chunks["chunks"][0]["chunk_id"], r"_s\d{4}$")
+
+        # 3) presentations -> sentence-level with [FIG] and [TABLE] token normalization
+        pres_chunks = self.client.get(
+            "/api/explorer/documents/presentations/1998-02-03/chunks",
+            params={"limit": 300},
+            headers=hdrs,
+        ).json()
+        self.assertGreater(pres_chunks["total"], 20)
+        has_fig_or_table_token = any(
+            c["text_content"].startswith("[FIG]") or c["text_content"].startswith("[TABLE]")
+            for c in pres_chunks["chunks"]
+        )
+        self.assertTrue(has_fig_or_table_token, "Presentations should normalize charts/tables with [FIG] and [TABLE] tokens")
 
         # Verify relevance scores are now available across all doc_types (speeches, greenbook, beige_books, agenda_items)
         for dt, mdate in (

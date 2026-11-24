@@ -42,8 +42,14 @@ import type {
 
 export const ExplorerPage: React.FC = () => {
   const { isDark } = useTheme();
-  const { recordHistory, restoreRequest, clearRestoreRequest, addToBasket, basket } =
-    useWorkspace();
+  const {
+    recordHistory,
+    restoreRequest,
+    clearRestoreRequest,
+    addToBasket,
+    basket,
+    dbVersionRevision,
+  } = useWorkspace();
 
   const [docTypes, setDocTypes] = useState<DocTypeOption[]>([]);
   const [macroCategories, setMacroCategories] = useState<MacroCategoryItem[]>([]);
@@ -95,7 +101,7 @@ export const ExplorerPage: React.FC = () => {
   useEffect(() => {
     api.getDocTypes().then((r) => setDocTypes(r.doc_types)).catch(() => {});
     api.getTaxonomy().then((t) => setMacroCategories(t.macro_categories)).catch(() => {});
-  }, []);
+  }, [dbVersionRevision]);
 
   // Allow Escape key to exit maximized table view
   useEffect(() => {
@@ -161,8 +167,11 @@ export const ExplorerPage: React.FC = () => {
 
   useEffect(() => {
     executeSearch(undefined, false);
+    if (selectedMeeting && activeDocType) {
+      openDocument(selectedMeeting, activeDocType, false);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [dbVersionRevision]);
 
   const openDocument = useCallback(
     async (meetingDate: string, docType: string, shouldRecord = true) => {
@@ -221,13 +230,13 @@ export const ExplorerPage: React.FC = () => {
     clearRestoreRequest();
   }, [restoreRequest, clearRestoreRequest, executeSearch, openDocument]);
 
-  // Fetch Zero-Shot & Relevance probabilities in parallel when document or speaker filter changes
+  // Fetch Zero-Shot & Relevance probabilities in parallel when document, speaker filter, or DB version changes
   useEffect(() => {
     if (!selectedMeeting || !activeDocType) return;
     const params = { speaker: inspectorSpeaker || undefined };
     api.getZeroShot(activeDocType, selectedMeeting, params).then(setZeroShot).catch(() => setZeroShot(null));
     api.getRelevance(activeDocType, selectedMeeting, params).then(setRelevance).catch(() => setRelevance(null));
-  }, [selectedMeeting, activeDocType, inspectorSpeaker]);
+  }, [selectedMeeting, activeDocType, inspectorSpeaker, dbVersionRevision]);
 
   // Reactive Similarity Matrix fetch
   useEffect(() => {
@@ -243,7 +252,7 @@ export const ExplorerPage: React.FC = () => {
       .then(setSimData)
       .catch(() => setSimData(null))
       .finally(() => setLoadingSim(false));
-  }, [selectedMeeting, activeDocType, simMetric, simNorm, simGranularity, simMacroDrill]);
+  }, [selectedMeeting, activeDocType, simMetric, simNorm, simGranularity, simMacroDrill, dbVersionRevision]);
 
   // Heatmap: Y-Axis = Topics, X-Axis = Chunk Sequence (Slices), 3 sig figs on hover
   const heatmapOption = useMemo(() => {

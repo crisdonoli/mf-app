@@ -19,6 +19,7 @@ from .matrix_math import (
     project_matrix_granularity,
     transform_matrix,
 )
+from .query_engine import clear_speaker_catalog_cache
 from .taxonomy import (
     MACRO_CATEGORIES,
     SUBCLASS_HIERARCHY,

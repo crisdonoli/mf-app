@@ -150,6 +150,24 @@ export interface DocTypeOption {
   chunk_count?: number;
 }
 
+export interface DbVersionInfo {
+  version: string;
+  tag: string;
+  fingerprint: string;
+  generated_at: string;
+  total_indexed_chunks?: number;
+  total_human_size?: string;
+  notes?: string;
+  path?: string;
+  active?: boolean;
+}
+
+export interface DbVersionsResponse {
+  active: DbVersionInfo;
+  versions: DbVersionInfo[];
+  stats?: CorpusStats;
+}
+
 export interface CorpusStats {
   total_chunks: number;
   doc_types_count: number;
@@ -162,6 +180,8 @@ export interface CorpusStats {
   macro_category_count: number;
   subclass_count: number;
   engine: string;
+  db_version?: DbVersionInfo;
+  available_db_versions?: DbVersionInfo[];
 }
 
 export interface SubclassItem {

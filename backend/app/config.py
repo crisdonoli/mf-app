@@ -428,13 +428,15 @@ class Settings:
             if path.is_file():
                 try:
                     raw = json.loads(path.read_text(encoding="utf-8"))
+                    ver = str(raw.get("version") or "1.0.0").lstrip("v")
                     return {
-                        "version": raw.get("version", "1.0.0"),
-                        "tag": raw.get("tag", f"v{raw.get('version', '1.0.0')}"),
-                        "fingerprint": raw.get("fingerprint", ""),
-                        "generated_at": raw.get("generated_at", ""),
-                        "total_indexed_chunks": raw.get("total_indexed_chunks", 0),
-                        "total_human_size": raw.get("total_human_size", ""),
+                        "version": ver,
+                        "tag": str(raw.get("tag") or f"v{ver}"),
+                        "fingerprint": str(raw.get("fingerprint") or ""),
+                        "generated_at": str(raw.get("generated_at") or ""),
+                        "total_indexed_chunks": int(raw.get("total_indexed_chunks") or 0),
+                        "total_human_size": str(raw.get("total_human_size") or ""),
+                        "notes": str(raw.get("notes") or ""),
                         "path": str(path),
                     }
                 except Exception:
@@ -444,8 +446,128 @@ class Settings:
             "tag": "unversioned",
             "fingerprint": "",
             "generated_at": "",
+            "notes": "",
             "path": str(self.fomc_data_dir / "VERSION.json"),
         }
+
+    def discover_available_db_versions(self) -> list[dict[str, object]]:
+        """Dynamically scan all database versions available on disk in the repository.
+
+        Scans:
+        - ``fomc_data_dir`` and its ``versions/v*`` or ``v*`` subdirectories
+        - ``_APP_ROOT / 'fomc-data'`` and its ``versions/v*`` or ``v*`` subdirectories
+        - sibling ``fomc-data-v*`` directories in ``_APP_ROOT``
+        - ``common/data`` and ``common/data/versions/v*`` if present in local dev
+        """
+        search_roots: list[Path] = []
+        base_candidates = [
+            self.fomc_data_dir,
+            self.fomc_data_dir.parent if self.fomc_data_dir.parent.name == "versions" else None,
+            self.fomc_data_dir.parent.parent if self.fomc_data_dir.parent.name == "versions" else None,
+            _APP_ROOT / "fomc-data",
+            _MONOREPO_ROOT / "fomc-db" / "common" / "data",
+            _MONOREPO_ROOT / "common" / "data",
+        ]
+        for b in base_candidates:
+            if b is not None and b.is_dir() and b not in search_roots:
+                search_roots.append(b)
+
+        candidate_db_dirs: list[Path] = []
+        for root in search_roots:
+            candidate_db_dirs.append(root)
+            versions_sub = root / "versions"
+            if versions_sub.is_dir():
+                for child in sorted(versions_sub.iterdir()):
+                    if child.is_dir():
+                        candidate_db_dirs.append(child)
+            for child in sorted(root.glob("v*")):
+                if child.is_dir():
+                    candidate_db_dirs.append(child)
+        for sibling in sorted(_APP_ROOT.glob("fomc-data-*")):
+            if sibling.is_dir():
+                candidate_db_dirs.append(sibling)
+
+        active_resolved = self.fomc_data_dir.resolve()
+        active_vinfo = self.resolve_db_version_info()
+        active_ver_str = str(active_vinfo.get("version") or "")
+
+        by_version: dict[str, dict[str, object]] = {}
+        for db_dir in candidate_db_dirs:
+            if not (db_dir / "text_metadata").is_dir():
+                continue
+            vfile = db_dir / "VERSION.json"
+            if not vfile.is_file():
+                vfile = db_dir / "manifest.json"
+
+            ver = ""
+            tag = ""
+            fingerprint = ""
+            generated_at = ""
+            total_chunks = 0
+            human_size = ""
+            notes = ""
+            if vfile.is_file():
+                try:
+                    raw = json.loads(vfile.read_text(encoding="utf-8"))
+                    ver = str(raw.get("version") or "").lstrip("v")
+                    tag = str(raw.get("tag") or (f"v{ver}" if ver else ""))
+                    fingerprint = str(raw.get("fingerprint") or "")
+                    generated_at = str(raw.get("generated_at") or "")
+                    total_chunks = int(raw.get("total_indexed_chunks") or 0)
+                    human_size = str(raw.get("total_human_size") or "")
+                    notes = str(raw.get("notes") or "")
+                except Exception:
+                    pass
+            if not ver:
+                dir_name = db_dir.name
+                if dir_name.startswith("v") and any(ch.isdigit() for ch in dir_name):
+                    ver = dir_name.lstrip("v")
+                    tag = f"v{ver}"
+                elif dir_name.startswith("fomc-data-v"):
+                    ver = dir_name.split("fomc-data-v", 1)[1]
+                    tag = f"v{ver}"
+                else:
+                    ver = "default"
+                    tag = "default"
+
+            is_active = db_dir.resolve() == active_resolved or (
+                ver == active_ver_str and ver not in by_version
+            )
+            entry = {
+                "version": ver,
+                "tag": tag or f"v{ver}",
+                "fingerprint": fingerprint,
+                "generated_at": generated_at,
+                "total_indexed_chunks": total_chunks,
+                "total_human_size": human_size,
+                "notes": notes,
+                "path": str(db_dir.resolve()),
+                "active": False,
+            }
+            # Prefer exact active directory or versions/v* directory
+            if ver not in by_version or db_dir.resolve() == active_resolved:
+                by_version[ver] = entry
+
+        def _semver_key(v_str: str) -> tuple:
+            parts = []
+            for p in v_str.split("."):
+                parts.append(int(p) if p.isdigit() else -1)
+            return tuple(parts)
+
+        ordered = sorted(by_version.values(), key=lambda x: _semver_key(str(x["version"])), reverse=True)
+        # Mark active entry
+        marked = False
+        for item in ordered:
+            if Path(str(item["path"])).resolve() == active_resolved:
+                item["active"] = True
+                marked = True
+                break
+        if not marked:
+            for item in ordered:
+                if item["version"] == active_ver_str:
+                    item["active"] = True
+                    break
+        return ordered
 
     def get_dataset_diagnostics(self) -> dict[str, dict[str, object]]:
         """Inspect resolved Parquet paths for startup health logging."""
@@ -541,3 +663,39 @@ def set_settings(settings: Settings | None) -> None:
     """Override settings for testing or custom initialization."""
     global _settings
     _settings = settings
+
+
+def switch_active_db_version(version_or_tag: str) -> dict[str, object]:
+    """Switch the active ``fomc_data_dir`` at runtime to a discovered database version."""
+    from dataclasses import replace
+
+    current = get_settings()
+    clean_target = version_or_tag.strip().lstrip("v")
+    available = current.discover_available_db_versions()
+    matched = next(
+        (
+            item
+            for item in available
+            if str(item["version"]).lstrip("v") == clean_target
+            or str(item["tag"]).lstrip("v") == clean_target
+        ),
+        None,
+    )
+    if matched is None:
+        raise ValueError(
+            f"Database version '{version_or_tag}' not found in repository. "
+            f"Available: {[item['tag'] for item in available]}"
+        )
+
+    new_dir = Path(str(matched["path"]))
+    tax_candidate = new_dir / "taxonomy.json"
+    new_settings = replace(
+        current,
+        fomc_data_dir=new_dir,
+        similarities_dir=None,
+        labels_dir=None,
+        relevance_dir=None,
+        taxonomy_path=tax_candidate if tax_candidate.is_file() else current.taxonomy_path,
+    )
+    set_settings(new_settings)
+    return new_settings.resolve_db_version_info()
