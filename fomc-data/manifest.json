@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
   "db_name": "mining-fomc-app-db",
-  "version": "1.1.0",
-  "tag": "v1.1.0",
-  "fingerprint": "95cb4fad2ad72dad",
-  "generated_at": "2026-11-24T13:49:14Z",
+  "version": "1.2.0",
+  "tag": "v1.2.0",
+  "fingerprint": "c811cc1160ee2c18",
+  "generated_at": "2026-11-24T14:15:16Z",
   "horizon_years": [
     1976,
     2020
   ],
   "total_indexed_chunks": 744713,
-  "total_files": 1333,
-  "total_bytes": 187398320,
-  "total_human_size": "178.72 MB",
-  "notes": "Sentence-level chunking for speeches ({speech_id}_s{sent_idx:04d}) aligned with sentence similarity matrices",
+  "total_files": 1761,
+  "total_bytes": 196046001,
+  "total_human_size": "186.96 MB",
+  "notes": "Corpus-wide relevance probabilities (p_relevant) across all 19 doc_types + sentence-chunked speeches",
   "sections": {
     "text_metadata": {
       "files": 428,
@@ -41,9 +41,9 @@
       "human_size": "38.55 MB"
     },
     "relevance": {
-      "files": 1,
-      "bytes": 990923,
-      "human_size": "967.70 KB"
+      "files": 429,
+      "bytes": 9638604,
+      "human_size": "9.19 MB"
     },
     "participants.parquet": {
       "files": 1,
