@@ -1080,9 +1080,13 @@ class ParquetQueryEngine:
                 mat = np.asarray(sim_col.to_pylist(), dtype=np.float32)
 
             for idx, cid in enumerate(cids):
-                base_cid = _SUBCHUNK_RE.sub("", str(cid))
-                if not id_set or base_cid in id_set:
-                    matched_vecs[base_cid].append(mat[idx])
+                cid_str = str(cid)
+                if cid_str in id_set:
+                    matched_vecs[cid_str].append(mat[idx])
+                else:
+                    base_cid = _SUBCHUNK_RE.sub("", cid_str)
+                    if not id_set or base_cid in id_set:
+                        matched_vecs[base_cid].append(mat[idx])
 
         if not matched_vecs:
             return [], np.empty((0, 0), dtype=np.float32), []
@@ -1117,6 +1121,8 @@ class ParquetQueryEngine:
             return [], []
         chunk_lookup = {c["chunk_id"]: c for c in chunks}
         id_list = list(chunk_lookup.keys())
+        base_id_list = sorted({_SUBCHUNK_RE.sub("", cid) for cid in id_list})
+        query_ids = list({*id_list, *base_id_list})
 
         year = meeting_date[:4]
         part_dir = labels_dir / f"doc_type={doc_type}" / f"year={year}"
@@ -1137,7 +1143,7 @@ class ParquetQueryEngine:
             return [], []
 
         table = ds.dataset(target_file, format="parquet").to_table(
-            filter=ds.field("chunk_id").isin(id_list)
+            filter=ds.field("chunk_id").isin(query_ids)
         )
         if table.num_rows == 0:
             return [], []
@@ -1151,10 +1157,9 @@ class ParquetQueryEngine:
         }
         score_cols = [c for c in schema_names if c not in reserved]
 
-        rows_by_id: dict[str, dict[str, Any]] = {}
+        raw_by_id: dict[str, dict[str, Any]] = {}
         for r in table.to_pylist():
             cid = str(r["chunk_id"])
-            chunk_meta = chunk_lookup.get(cid, {})
             scores: dict[str, float] = {}
             for col in score_cols:
                 val = r.get(col)
@@ -1166,20 +1171,32 @@ class ParquetQueryEngine:
                 scores["monetary_aggregates"] = scores["gdp_activity"]
             elif scores.get("monetary_aggregates", 0.0) == 0.0 and scores.get("gdp_activity", 0.0) > 0.0:
                 scores["monetary_aggregates"] = scores["gdp_activity"]
-
-            rows_by_id[cid] = {
-                "chunk_id": cid,
-                "sequence_num": chunk_meta.get("sequence_num", 0),
-                "speaker": chunk_meta.get("speaker", ""),
-                "speaker_role": chunk_meta.get("speaker_role", ""),
-                "text_content": chunk_meta.get("text_content", ""),
+            raw_by_id[cid] = {
                 "label_name": str(r.get("label_name") or ""),
                 "subclass_label_name": str(r.get("subclass_label_name") or "") or None,
                 "p_relevant": float(r["p_relevant"]) if r.get("p_relevant") is not None else None,
                 "scores": scores,
             }
 
-        ordered = [rows_by_id[cid] for cid in id_list if cid in rows_by_id]
+        ordered: list[dict[str, Any]] = []
+        for cid in id_list:
+            matched = raw_by_id.get(cid) or raw_by_id.get(_SUBCHUNK_RE.sub("", cid))
+            if matched is None:
+                continue
+            chunk_meta = chunk_lookup.get(cid, {})
+            ordered.append(
+                {
+                    "chunk_id": cid,
+                    "sequence_num": chunk_meta.get("sequence_num", 0),
+                    "speaker": chunk_meta.get("speaker", ""),
+                    "speaker_role": chunk_meta.get("speaker_role", ""),
+                    "text_content": chunk_meta.get("text_content", ""),
+                    "label_name": matched["label_name"],
+                    "subclass_label_name": matched["subclass_label_name"],
+                    "p_relevant": matched["p_relevant"],
+                    "scores": matched["scores"],
+                }
+            )
         return ordered, score_cols
 
     # ------------------------------------------------------------------ Relevance Scores

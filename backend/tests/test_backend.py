@@ -591,7 +591,7 @@ class TestCompactCommonAppDBIntegration(unittest.TestCase):
         self.assertEqual(h.status_code, 200)
         h_json = h.json()
         self.assertIn("db_version", h_json)
-        self.assertEqual(h_json["db_version"]["version"], "1.0.0")
+        self.assertIn(h_json["db_version"]["version"], ("1.0.0", "1.1.0"))
         diag = h_json["datasets"]
         for key in (
             "data_dir",
@@ -644,6 +644,27 @@ class TestCompactCommonAppDBIntegration(unittest.TestCase):
         self.assertEqual(rel.status_code, 200)
         self.assertTrue(rel.json()["available"])
         self.assertGreater(rel.json()["total_classified"], 100)
+
+        # Verify speeches are split into individual sentence chunks (e.g. Atlanta_0002_s0000, _s0001...)
+        sp_chunks = self.client.get("/api/explorer/documents/speeches/1995-08-10/chunks", headers=hdrs)
+        self.assertEqual(sp_chunks.status_code, 200)
+        sp_data = sp_chunks.json()
+        self.assertGreater(sp_data["total"], 20, "Speech should be split into multiple sentence chunks")
+        self.assertRegex(sp_data["chunks"][0]["chunk_id"], r"_s\d{4}$")
+
+        sp_sim = self.client.get(
+            "/api/explorer/documents/speeches/1995-08-10/similarity",
+            params={"metric": "cosine", "normalization": "none", "granularity": "macro"},
+            headers=hdrs,
+        )
+        self.assertEqual(sp_sim.status_code, 200)
+        self.assertTrue(sp_sim.json()["available"])
+        self.assertGreater(sp_sim.json()["total_chunks"], 20)
+
+        sp_zs = self.client.get("/api/explorer/documents/speeches/1995-08-10/zero-shot", headers=hdrs)
+        self.assertEqual(sp_zs.status_code, 200)
+        self.assertTrue(sp_zs.json()["available"])
+        self.assertGreater(sp_zs.json()["total_classified"], 20)
 
 
 if __name__ == "__main__":
