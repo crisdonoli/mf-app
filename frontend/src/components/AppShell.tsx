@@ -53,9 +53,9 @@ function makeThemeAdaptiveSvg(rawSvg: string): string {
     )
     .replace(/<svg\b([^>]*)>/i, (_match, attrs: string) => {
       const cleaned = attrs
-        .replace(/\b(width|height|class)="[^"]*"/gi, "")
+        .replace(/\b(width|height|class|viewBox)="[^"]*"/gi, "")
         .trim();
-      return `<svg ${cleaned} width="140" height="28" class="h-7 w-[140px] block shrink-0">`;
+      return `<svg ${cleaned} viewBox="105 5 1315 725" width="124" height="68" class="h-14 sm:h-16 w-auto block shrink-0">`;
     });
 }
 
@@ -182,7 +182,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
   return (
     <div className="min-h-screen flex flex-col bg-canvas text-ink">
       {/* Top Navigation Bar */}
-      <header className="sticky top-0 z-30 h-14 bg-surface/95 backdrop-blur border-b border-border">
+      <header className="sticky top-0 z-30 h-16 sm:h-[72px] bg-surface/95 backdrop-blur border-b border-border">
         <div className="h-full max-w-[1640px] mx-auto px-4 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
             <Link
