@@ -43,10 +43,10 @@ interface AppShellProps {
 // ============================================================================
 // Parámetros explícitos de tamaño del Logo y Navbar (modificables fácilmente)
 // ============================================================================
-const FOMC_LOGO_WIDTH_PX = 80;         // Ancho del logo MiningFOMC en el navbar (px)
-const FOMC_LOGO_HEIGHT_PX = 60;         // Alto del logo MiningFOMC en el navbar (px)
-const FOMC_LOGO_VIEWBOX = "105 5 1315 725"; // Recorte del lienzo SVG (x y width height)
-const NAVBAR_HEIGHT_PX = 76;            // Altura de la barra de navegación superior (px)
+const FOMC_LOGO_WIDTH_PX = 96;          // Ancho del logo MiningFOMC en el navbar (px)
+const FOMC_LOGO_HEIGHT_PX = 52;         // Alto del logo MiningFOMC en el navbar (px)
+const FOMC_LOGO_VIEWBOX = "110 10 1300 715"; // Recorte exacto del lienzo SVG centrado (x y width height)
+const NAVBAR_HEIGHT_PX = 64;            // Altura de la barra de navegación superior (px)
 const FEN_FOOTER_LOGO_HEIGHT_PX = 56;   // Altura del logo de la FEN en el footer (px)
 
 /** Ensure imported SVG dynamically adapts fills/strokes to currentColor in Light/Dark Mode. */
@@ -185,7 +185,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
   };
 
   const navLinkClass = ({ isActive }: { isActive: boolean }) =>
-    `px-2.5 py-1.5 text-xs sm:text-sm font-medium rounded-sm transition-colors flex items-center gap-1.5 ${
+    `h-8 px-2.5 text-xs sm:text-sm font-medium rounded-sm transition-colors inline-flex items-center justify-center gap-1.5 leading-none ${
       isActive
         ? "bg-[#1E3A8A] dark:bg-[#2563EB] text-white"
         : "text-muted hover:text-ink hover:bg-slate-100 dark:hover:bg-slate-800"
@@ -198,23 +198,23 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
       {/* Top Navigation Bar */}
       <header
         style={{ height: `${NAVBAR_HEIGHT_PX}px` }}
-        className="sticky top-0 z-30 bg-surface/95 backdrop-blur border-b border-border"
+        className="sticky top-0 z-30 bg-surface/95 backdrop-blur border-b border-border flex items-center"
       >
-        <div className="h-full max-w-[1640px] mx-auto px-4 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
+        <div className="w-full h-full max-w-[1640px] mx-auto px-4 flex items-center justify-between gap-3">
+          <div className="h-full flex items-center min-w-0">
             <Link
               to="/"
               aria-label="MiningFOMC Home"
-              className="flex items-center gap-2.5 min-w-0 text-ink hover:text-accent transition-colors"
+              className="h-full inline-flex items-center text-ink hover:text-accent transition-colors leading-none"
             >
               <span
-                className="inline-flex items-center shrink-0 text-ink"
+                className="inline-flex items-center justify-center shrink-0 text-ink leading-none"
                 dangerouslySetInnerHTML={{ __html: adaptiveLogoSvg }}
               />
             </Link>
           </div>
 
-          <nav className="flex items-center gap-1">
+          <nav className="h-full flex items-center gap-1.5">
             <NavLink to="/" end className={navLinkClass}>
               Home
             </NavLink>
@@ -254,7 +254,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
                 )}
 
                 {/* In-App Notification Bell */}
-                <div className="relative">
+                <div className="relative inline-flex items-center">
                   <button
                     type="button"
                     onClick={() => {
@@ -262,7 +262,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
                       loadNotifications();
                     }}
                     title="Notifications"
-                    className="relative p-1.5 text-muted hover:text-ink border border-border rounded-sm hover:border-accent transition-colors ml-1"
+                    className="relative h-8 w-8 inline-flex items-center justify-center text-muted hover:text-ink border border-border rounded-sm hover:border-accent transition-colors ml-0.5"
                   >
                     <Bell className="w-4 h-4" />
                     {unreadCount > 0 && (
@@ -355,7 +355,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
               onClick={toggleTheme}
               title={isDark ? "Switch to Light Mode" : "Switch to Dark Mode"}
               aria-label={isDark ? "Switch to Light Mode" : "Switch to Dark Mode"}
-              className="p-1.5 text-muted hover:text-ink border border-border rounded-sm hover:border-accent transition-colors ml-1"
+              className="h-8 w-8 inline-flex items-center justify-center text-muted hover:text-ink border border-border rounded-sm hover:border-accent transition-colors ml-0.5"
             >
               {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
@@ -363,7 +363,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
             {/* Dynamic Database Version Selector at Rightmost End of Navbar */}
             {availableDbVersions.length > 0 && (
               <div
-                className="flex items-center gap-1.5 px-2 py-1 border border-border rounded-sm bg-canvas text-xs font-mono ml-1"
+                className="h-8 inline-flex items-center gap-1.5 px-2.5 border border-border rounded-sm bg-canvas text-xs font-mono ml-0.5 leading-none"
                 title={
                   activeDbVersion?.notes
                     ? `DB ${activeDbVersion.tag} — ${activeDbVersion.notes}`
@@ -381,7 +381,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
                       switchDbVersion(e.target.value);
                     }
                   }}
-                  className="bg-transparent text-ink font-semibold text-xs focus:outline-none cursor-pointer pr-1"
+                  className="bg-transparent text-ink font-semibold text-xs focus:outline-none cursor-pointer pr-1 leading-none"
                 >
                   {availableDbVersions.map((v) => (
                     <option key={v.version} value={v.version} className="bg-surface text-ink">
@@ -400,7 +400,10 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
       <div className="flex-1 flex max-w-[1640px] w-full mx-auto relative">
         {user && sidebarOpen && (
           <aside className="w-64 shrink-0 border-r border-border bg-surface hidden lg:flex flex-col">
-            <div className="sticky top-14 z-10 bg-surface px-4 py-3 border-b border-border flex items-center justify-between gap-2">
+            <div
+              style={{ top: `${NAVBAR_HEIGHT_PX}px` }}
+              className="sticky z-10 bg-surface px-4 py-3 border-b border-border flex items-center justify-between gap-2"
+            >
               <button
                 type="button"
                 onClick={() => setSidebarOpen(false)}
@@ -493,7 +496,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
         {/* Collapsed History Side Tab peeking from left edge at the exact same vertical height as the open title */}
         {user && !sidebarOpen && (
           <div className="hidden lg:block shrink-0">
-            <div className="sticky top-14 z-20">
+            <div style={{ top: `${NAVBAR_HEIGHT_PX}px` }} className="sticky z-20">
               <button
                 type="button"
                 onClick={() => setSidebarOpen(true)}
