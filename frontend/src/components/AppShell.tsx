@@ -192,14 +192,14 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
   const navLinkClass = ({ isActive }: { isActive: boolean }) =>
     `h-8 px-2 lg:px-2.5 text-xs sm:text-sm font-medium rounded-sm transition-colors inline-flex items-center justify-center gap-1.5 leading-none shrink-0 ${
       isActive
-        ? "bg-[#59B6F7] text-slate-950 font-semibold"
+        ? "bg-[#3E6DB3] text-white font-medium"
         : "text-muted hover:text-ink hover:bg-slate-100 dark:hover:bg-slate-800"
     }`;
 
   const mobileNavLinkClass = ({ isActive }: { isActive: boolean }) =>
     `w-full px-3 py-2 text-xs font-medium rounded-sm transition-colors flex items-center gap-2 ${
       isActive
-        ? "bg-[#59B6F7] text-slate-950 font-semibold"
+        ? "bg-[#3E6DB3] text-white font-medium"
         : "text-muted hover:text-ink hover:bg-slate-100 dark:hover:bg-slate-800"
     }`;
 

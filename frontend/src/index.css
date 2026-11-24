@@ -9,9 +9,9 @@
     --color-ink: 15 23 42;            /* #0F172A */
     --color-muted: 71 85 105;         /* #475569 */
     --color-border: 226 232 240;      /* #E2E8F0 */
-    --color-accent: 89 182 247;       /* #59B6F7 Sky Blue Accent */
-    --color-accent-dark: 41 142 216;  /* #298ED8 Deeper Sky Blue for hover/text */
-    --color-accent-soft: 224 242 254; /* #E0F2FE Soft Sky Blue */
+    --color-accent: 62 109 179;       /* #3E6DB3 Muted Steel Blue */
+    --color-accent-dark: 47 86 144;   /* #2F5690 Deeper Steel Blue */
+    --color-accent-soft: 235 241 250; /* #EBF1FA Soft Steel Blue */
     color-scheme: light;
   }
 
@@ -21,9 +21,9 @@
     --color-ink: 248 250 252;         /* #F8FAFC Slate-50 */
     --color-muted: 148 163 184;       /* #94A3B8 Slate-400 */
     --color-border: 31 41 55;         /* #1F2937 Slate-800 */
-    --color-accent: 89 182 247;       /* #59B6F7 Sky Blue Accent */
-    --color-accent-dark: 125 202 252; /* #7DCAFC Lighter Sky Blue for dark text */
-    --color-accent-soft: 12 74 110;   /* #0C4A6E Deep Sky Blue */
+    --color-accent: 62 109 179;       /* #3E6DB3 Muted Steel Blue */
+    --color-accent-dark: 122 162 218; /* #7AA2DA Subtle Steel Blue for dark text */
+    --color-accent-soft: 26 42 71;    /* #1A2A47 Deep Steel Blue */
     color-scheme: dark;
   }
 
@@ -46,8 +46,8 @@
 
   .btn-primary {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium
-           bg-[#59B6F7] text-slate-950 border border-[#59B6F7] rounded-sm hover:bg-[#3FA5F2]
-           dark:bg-[#59B6F7] dark:text-slate-950 dark:border-[#59B6F7] dark:hover:bg-[#7DCAFC]
+           bg-[#3E6DB3] text-white border border-[#3E6DB3] rounded-sm hover:bg-[#345E9C]
+           dark:bg-[#3E6DB3] dark:text-white dark:border-[#3E6DB3] dark:hover:bg-[#4D7EC7]
            transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
   }
 
@@ -113,10 +113,10 @@
 }
 
 .dark .bg-ink {
-  background-color: rgb(89 182 247) !important;
-  color: rgb(15 23 42) !important;
+  background-color: rgb(62 109 179) !important;
+  color: rgb(255 255 255) !important;
 }
 
 .dark .border-ink {
-  border-color: rgb(89 182 247) !important;
+  border-color: rgb(62 109 179) !important;
 }
