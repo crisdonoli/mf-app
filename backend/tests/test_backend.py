@@ -591,7 +591,7 @@ class TestCompactCommonAppDBIntegration(unittest.TestCase):
         self.assertEqual(h.status_code, 200)
         h_json = h.json()
         self.assertIn("db_version", h_json)
-        self.assertIn(h_json["db_version"]["version"], ("1.0.0", "1.1.0"))
+        self.assertIn(h_json["db_version"]["version"], ("1.0.0", "1.1.0", "1.2.0"))
         diag = h_json["datasets"]
         for key in (
             "data_dir",
@@ -665,6 +665,18 @@ class TestCompactCommonAppDBIntegration(unittest.TestCase):
         self.assertEqual(sp_zs.status_code, 200)
         self.assertTrue(sp_zs.json()["available"])
         self.assertGreater(sp_zs.json()["total_classified"], 20)
+
+        # Verify relevance scores are now available across all doc_types (speeches, greenbook, beige_books, agenda_items)
+        for dt, mdate in (
+            ("speeches", "1995-08-10"),
+            ("greenbook", "1997-02-04"),
+            ("beige_books", "1997-02-04"),
+            ("agenda_items", "1997-02-04"),
+        ):
+            r_rel = self.client.get(f"/api/explorer/documents/{dt}/{mdate}/relevance", headers=hdrs)
+            self.assertEqual(r_rel.status_code, 200)
+            self.assertTrue(r_rel.json()["available"], f"Relevance should be available for {dt} {mdate}")
+            self.assertGreater(r_rel.json()["total_classified"], 0)
 
 
 if __name__ == "__main__":

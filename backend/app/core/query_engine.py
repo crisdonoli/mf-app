@@ -1217,10 +1217,13 @@ class ParquetQueryEngine:
         id_list = list(chunk_lookup.keys())
 
         rel_file = self.settings.resolve_relevance_file()
+        year = meeting_date[:4]
+        part_rel = rel_file.parent / f"doc_type={doc_type}" / f"year={year}" / "part-000.parquet"
+        target_rel_file = part_rel if part_rel.is_file() else rel_file
         rel_map: dict[str, float] = {}
 
-        if rel_file.is_file():
-            schema_names = pq.read_schema(rel_file).names
+        if target_rel_file.is_file():
+            schema_names = pq.read_schema(target_rel_file).names
             cols_low = {c.lower(): c for c in schema_names}
             id_col = cols_low.get("chunk_id") or cols_low.get("chunk")
             p_col = (
@@ -1231,33 +1234,14 @@ class ParquetQueryEngine:
                 or cols_low.get("score")
             )
             if id_col and p_col:
-                if HAS_DUCKDB:
-                    conn = self._connect_duckdb()
-                    try:
-                        conn.register("target_ids", pa.table({"cid": id_list}))
-                        rows = conn.execute(
-                            f"""
-                            SELECT CAST(r."{id_col}" AS VARCHAR), CAST(r."{p_col}" AS DOUBLE)
-                            FROM read_parquet(?) r
-                            INNER JOIN target_ids t ON CAST(r."{id_col}" AS VARCHAR) = t.cid
-                            WHERE r."{p_col}" IS NOT NULL
-                            """,
-                            [str(rel_file)],
-                        ).fetchall()
-                        for cid_val, p_val in rows:
-                            if p_val is not None and not np.isnan(float(p_val)):
-                                rel_map[str(cid_val)] = float(p_val)
-                    finally:
-                        conn.close()
-                else:
-                    table = ds.dataset(rel_file, format="parquet").to_table(
-                        columns=[id_col, p_col],
-                        filter=ds.field(id_col).isin(id_list),
-                    )
-                    for r in table.to_pylist():
-                        val = r.get(p_col)
-                        if val is not None and not np.isnan(float(val)):
-                            rel_map[str(r[id_col])] = float(val)
+                table = ds.dataset(target_rel_file, format="parquet").to_table(
+                    columns=[id_col, p_col],
+                    filter=ds.field(id_col).isin(id_list),
+                )
+                for r in table.to_pylist():
+                    val = r.get(p_col)
+                    if val is not None and not np.isnan(float(val)):
+                        rel_map[str(r[id_col])] = float(val)
 
         # Fallback: extract p_relevant from zero-shot labels if standalone file absent
         if not rel_map:
