@@ -48,7 +48,7 @@ const TEAM_MEMBERS: TeamMember[] = [
       "Architects and develops the MiningFOMC full-stack analytical platform, Machine/Deep Learning Pipeline for Classification, and Text as Data Economics.",
     photo: cristobalImg,
     profileUrl:
-      "https://www.linkedin.com/in/crist%C3%B3bal-rodrigo-donoso-oliva-9892aa2a6",
+      "https://crisdonoli.com/",
     profileLabel: "Website / Profile",
   }
 ];
