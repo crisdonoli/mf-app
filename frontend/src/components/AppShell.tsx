@@ -40,8 +40,22 @@ interface AppShellProps {
   children: React.ReactNode;
 }
 
+// ============================================================================
+// Parámetros explícitos de tamaño del Logo y Navbar (modificables fácilmente)
+// ============================================================================
+const FOMC_LOGO_WIDTH_PX = 145;         // Ancho del logo MiningFOMC en el navbar (px)
+const FOMC_LOGO_HEIGHT_PX = 80;         // Alto del logo MiningFOMC en el navbar (px)
+const FOMC_LOGO_VIEWBOX = "105 5 1315 725"; // Recorte del lienzo SVG (x y width height)
+const NAVBAR_HEIGHT_PX = 76;            // Altura de la barra de navegación superior (px)
+const FEN_FOOTER_LOGO_HEIGHT_PX = 56;   // Altura del logo de la FEN en el footer (px)
+
 /** Ensure imported SVG dynamically adapts fills/strokes to currentColor in Light/Dark Mode. */
-function makeThemeAdaptiveSvg(rawSvg: string): string {
+function makeThemeAdaptiveSvg(
+  rawSvg: string,
+  widthPx: number = FOMC_LOGO_WIDTH_PX,
+  heightPx: number = FOMC_LOGO_HEIGHT_PX,
+  viewBox: string = FOMC_LOGO_VIEWBOX
+): string {
   return rawSvg
     .replace(
       /(fill|stroke)="(?!none|transparent|url\()([^"]+)"/gi,
@@ -53,9 +67,9 @@ function makeThemeAdaptiveSvg(rawSvg: string): string {
     )
     .replace(/<svg\b([^>]*)>/i, (_match, attrs: string) => {
       const cleaned = attrs
-        .replace(/\b(width|height|class|viewBox)="[^"]*"/gi, "")
+        .replace(/\b(width|height|class|viewBox|style)="[^"]*"/gi, "")
         .trim();
-      return `<svg ${cleaned} viewBox="105 5 1315 725" width="124" height="68" class="h-14 sm:h-16 w-auto block shrink-0">`;
+      return `<svg ${cleaned} viewBox="${viewBox}" width="${widthPx}" height="${heightPx}" style="width:${widthPx}px;height:${heightPx}px;" class="block shrink-0">`;
     });
 }
 
@@ -182,7 +196,10 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
   return (
     <div className="min-h-screen flex flex-col bg-canvas text-ink">
       {/* Top Navigation Bar */}
-      <header className="sticky top-0 z-30 h-16 sm:h-[72px] bg-surface/95 backdrop-blur border-b border-border">
+      <header
+        style={{ height: `${NAVBAR_HEIGHT_PX}px` }}
+        className="sticky top-0 z-30 bg-surface/95 backdrop-blur border-b border-border"
+      >
         <div className="h-full max-w-[1640px] mx-auto px-4 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
             <Link
@@ -194,7 +211,6 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
                 className="inline-flex items-center shrink-0 text-ink"
                 dangerouslySetInnerHTML={{ __html: adaptiveLogoSvg }}
               />
-              <span className="hidden xl:inline-block mono-tag">1976–2020</span>
             </Link>
           </div>
 
@@ -206,39 +222,6 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
               <Users className="w-3.5 h-3.5" />
               Team
             </NavLink>
-
-            {/* Dynamic Database Version Selector in Navbar */}
-            {availableDbVersions.length > 0 && (
-              <div
-                className="flex items-center gap-1.5 px-2 py-1 border border-border rounded-sm bg-canvas text-xs font-mono ml-1"
-                title={
-                  activeDbVersion?.notes
-                    ? `DB ${activeDbVersion.tag} — ${activeDbVersion.notes}`
-                    : "Select active FOMC database version"
-                }
-              >
-                <Database className="w-3.5 h-3.5 text-accent shrink-0" />
-                <span className="hidden md:inline text-[11px] text-muted uppercase">DB:</span>
-                <select
-                  aria-label="Select Database Version"
-                  disabled={switchingDbVersion}
-                  value={activeDbVersion?.version || availableDbVersions[0]?.version || ""}
-                  onChange={(e) => {
-                    if (e.target.value) {
-                      switchDbVersion(e.target.value);
-                    }
-                  }}
-                  className="bg-transparent text-ink font-semibold text-xs focus:outline-none cursor-pointer pr-1"
-                >
-                  {availableDbVersions.map((v) => (
-                    <option key={v.version} value={v.version} className="bg-surface text-ink">
-                      {v.tag}
-                      {v.total_human_size ? ` (${v.total_human_size})` : ""}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
 
             {user ? (
               <>
@@ -376,6 +359,39 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
             >
               {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
+
+            {/* Dynamic Database Version Selector at Rightmost End of Navbar */}
+            {availableDbVersions.length > 0 && (
+              <div
+                className="flex items-center gap-1.5 px-2 py-1 border border-border rounded-sm bg-canvas text-xs font-mono ml-1"
+                title={
+                  activeDbVersion?.notes
+                    ? `DB ${activeDbVersion.tag} — ${activeDbVersion.notes}`
+                    : "Select active FOMC database version"
+                }
+              >
+                <Database className="w-3.5 h-3.5 text-accent shrink-0" />
+                <span className="hidden md:inline text-[11px] text-muted uppercase">DB:</span>
+                <select
+                  aria-label="Select Database Version"
+                  disabled={switchingDbVersion}
+                  value={activeDbVersion?.version || availableDbVersions[0]?.version || ""}
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      switchDbVersion(e.target.value);
+                    }
+                  }}
+                  className="bg-transparent text-ink font-semibold text-xs focus:outline-none cursor-pointer pr-1"
+                >
+                  {availableDbVersions.map((v) => (
+                    <option key={v.version} value={v.version} className="bg-surface text-ink">
+                      {v.tag}
+                      {v.total_human_size ? ` (${v.total_human_size})` : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </nav>
         </div>
       </header>
@@ -507,7 +523,8 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
             <img
               src={isDark ? fenDarkLogo : fenLightLogo}
               alt="FEN — Universidad de Chile"
-              className="h-12 sm:h-14 w-auto object-contain mx-auto"
+              style={{ height: `${FEN_FOOTER_LOGO_HEIGHT_PX}px` }}
+              className="w-auto object-contain mx-auto"
             />
           </a>
           <p className="text-xs font-mono text-muted text-center">
