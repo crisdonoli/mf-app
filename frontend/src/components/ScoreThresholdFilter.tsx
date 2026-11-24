@@ -148,7 +148,7 @@ export const ScoreThresholdFilter: React.FC<ScoreThresholdFilterProps> = ({
               >
                 <option value="none">None</option>
                 <option value="topic">Topic</option>
-                <option value="slice">Slice</option>
+                <option value="slice">Time</option>
               </select>
               <input
                 type="number"

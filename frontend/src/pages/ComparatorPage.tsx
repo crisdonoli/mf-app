@@ -1520,7 +1520,7 @@ S${t.slice_num}`;
                     [
                       { id: "none", label: "None" },
                       { id: "topic", label: "Topic" },
-                      { id: "slice", label: "Slice" },
+                      { id: "slice", label: "Time" },
                     ] as { id: NormalizationMode; label: string }[]
                   ).map((n) => (
                     <button

@@ -24,7 +24,7 @@ from .taxonomy import (
 )
 
 MetricTransform = Literal["cosine", "softmax", "log"]
-NormalizationMode = Literal["none", "topic", "slice", "row", "column"]
+NormalizationMode = Literal["none", "topic", "slice", "time", "row", "column"]
 
 _EPS = 1e-8
 
@@ -41,8 +41,8 @@ class PartitionResult:
 
 
 def normalize_mode_alias(normalization: str) -> Literal["none", "topic", "slice"]:
-    """Map legacy ``row``/``column`` aliases to canonical ``slice``/``topic`` names."""
-    if normalization in ("slice", "row"):
+    """Map legacy ``row``/``column`` and ``time`` aliases to canonical ``slice``/``topic`` names."""
+    if normalization in ("slice", "time", "row"):
         return "slice"
     if normalization in ("topic", "column"):
         return "topic"
