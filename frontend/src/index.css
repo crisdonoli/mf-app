@@ -9,9 +9,9 @@
     --color-ink: 15 23 42;            /* #0F172A */
     --color-muted: 71 85 105;         /* #475569 */
     --color-border: 226 232 240;      /* #E2E8F0 */
-    --color-accent: 29 78 216;        /* #1D4ED8 Institutional Royal Blue */
-    --color-accent-dark: 30 58 138;   /* #1E3A8A Institutional Navy */
-    --color-accent-soft: 239 246 255; /* #EFF6FF Blue-50 */
+    --color-accent: 89 182 247;       /* #59B6F7 Sky Blue Accent */
+    --color-accent-dark: 41 142 216;  /* #298ED8 Deeper Sky Blue for hover/text */
+    --color-accent-soft: 224 242 254; /* #E0F2FE Soft Sky Blue */
     color-scheme: light;
   }
 
@@ -21,9 +21,9 @@
     --color-ink: 248 250 252;         /* #F8FAFC Slate-50 */
     --color-muted: 148 163 184;       /* #94A3B8 Slate-400 */
     --color-border: 31 41 55;         /* #1F2937 Slate-800 */
-    --color-accent: 59 130 246;       /* #3B82F6 Blue-500 */
-    --color-accent-dark: 96 165 250;  /* #60A5FA Blue-400 */
-    --color-accent-soft: 23 37 84;    /* #172554 Blue-950 */
+    --color-accent: 89 182 247;       /* #59B6F7 Sky Blue Accent */
+    --color-accent-dark: 125 202 252; /* #7DCAFC Lighter Sky Blue for dark text */
+    --color-accent-soft: 12 74 110;   /* #0C4A6E Deep Sky Blue */
     color-scheme: dark;
   }
 
@@ -46,8 +46,8 @@
 
   .btn-primary {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium
-           bg-[#1E3A8A] text-white border border-[#1E3A8A] rounded-sm hover:bg-[#1D4ED8]
-           dark:bg-[#2563EB] dark:border-[#2563EB] dark:hover:bg-[#3B82F6]
+           bg-[#59B6F7] text-slate-950 border border-[#59B6F7] rounded-sm hover:bg-[#3FA5F2]
+           dark:bg-[#59B6F7] dark:text-slate-950 dark:border-[#59B6F7] dark:hover:bg-[#7DCAFC]
            transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
   }
 
@@ -113,9 +113,10 @@
 }
 
 .dark .bg-ink {
-  background-color: rgb(37 99 235) !important;
+  background-color: rgb(89 182 247) !important;
+  color: rgb(15 23 42) !important;
 }
 
 .dark .border-ink {
-  border-color: rgb(59 130 246) !important;
+  border-color: rgb(89 182 247) !important;
 }

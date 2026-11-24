@@ -46,10 +46,12 @@ interface AppShellProps {
 // Parámetros explícitos de tamaño del Logo y Navbar (modificables fácilmente)
 // ============================================================================
 const FOMC_LOGO_WIDTH_PX = 100;          // Ancho del logo MiningFOMC en el navbar (px)
-const FOMC_LOGO_HEIGHT_PX = 52;         // Alto del logo MiningFOMC en el navbar (px)
+const FOMC_LOGO_HEIGHT_PX = 52;          // Alto del logo MiningFOMC en el navbar (px)
+const FOMC_LOGO_OFFSET_LEFT_PX = 28;     // Desplazamiento horizontal del logo hacia la derecha para alinear con el margen (px)
 const FOMC_LOGO_VIEWBOX = "110 10 1300 715"; // Recorte exacto del lienzo SVG centrado (x y width height)
-const NAVBAR_HEIGHT_PX = 64;            // Altura de la barra de navegación superior (px)
-const FEN_FOOTER_LOGO_HEIGHT_PX = 56;   // Altura del logo de la FEN en el footer (px)
+const NAVBAR_HEIGHT_PX = 64;             // Altura de la barra de navegación superior (px)
+const HISTORY_TAB_TOP_PX = 148;          // Posición vertical de la pestaña lateral de History desde el borde superior (px)
+const FEN_FOOTER_LOGO_HEIGHT_PX = 56;    // Altura del logo de la FEN en el footer (px)
 
 /** Ensure imported SVG dynamically adapts fills/strokes to currentColor in Light/Dark Mode. */
 function makeThemeAdaptiveSvg(
@@ -190,14 +192,14 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
   const navLinkClass = ({ isActive }: { isActive: boolean }) =>
     `h-8 px-2 lg:px-2.5 text-xs sm:text-sm font-medium rounded-sm transition-colors inline-flex items-center justify-center gap-1.5 leading-none shrink-0 ${
       isActive
-        ? "bg-[#1E3A8A] dark:bg-[#2563EB] text-white"
+        ? "bg-[#59B6F7] text-slate-950 font-semibold"
         : "text-muted hover:text-ink hover:bg-slate-100 dark:hover:bg-slate-800"
     }`;
 
   const mobileNavLinkClass = ({ isActive }: { isActive: boolean }) =>
     `w-full px-3 py-2 text-xs font-medium rounded-sm transition-colors flex items-center gap-2 ${
       isActive
-        ? "bg-[#1E3A8A] dark:bg-[#2563EB] text-white"
+        ? "bg-[#59B6F7] text-slate-950 font-semibold"
         : "text-muted hover:text-ink hover:bg-slate-100 dark:hover:bg-slate-800"
     }`;
 
@@ -215,7 +217,10 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
           className="w-full max-w-[1640px] mx-auto px-3 sm:px-4 flex items-center justify-between gap-2 sm:gap-3"
         >
           {/* Logo Container: shrink-0 prevents navbar items from overlapping or crushing the logo */}
-          <div className="h-full flex items-center shrink-0">
+          <div
+            style={{ marginLeft: `${FOMC_LOGO_OFFSET_LEFT_PX}px` }}
+            className="h-full flex items-center shrink-0"
+          >
             <Link
               to="/"
               aria-label="MiningFOMC Home"
@@ -599,21 +604,26 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
           </aside>
         )}
 
-        {/* Collapsed History Side Tab peeking from left edge at the exact same vertical height as the open title */}
+        {/* Collapsed History Vertical Side Tab affixed to left viewport edge */}
         {user && !sidebarOpen && (
-          <div className="hidden lg:block shrink-0">
-            <div style={{ top: `${NAVBAR_HEIGHT_PX}px` }} className="sticky z-20">
-              <button
-                type="button"
-                onClick={() => setSidebarOpen(true)}
-                title="Expand History panel"
-                className="flex items-center gap-1.5 px-2.5 py-3 bg-surface border-r border-b border-border rounded-br-sm shadow-sm text-xs font-mono uppercase tracking-wider font-semibold text-muted hover:text-ink hover:border-accent transition-colors"
-              >
-                <History className="w-4 h-4 text-accent shrink-0" />
-                <span>History ({history.length})</span>
-              </button>
-            </div>
-          </div>
+          <button
+            type="button"
+            onClick={() => setSidebarOpen(true)}
+            title="Expand History panel"
+            style={{ top: `${HISTORY_TAB_TOP_PX}px` }}
+            className="hidden lg:flex fixed left-0 z-20 flex-col items-center justify-center gap-2 py-3.5 px-2 bg-surface border border-l-0 border-border rounded-r-sm shadow-md text-xs font-mono uppercase tracking-wider font-semibold text-muted hover:text-ink hover:border-accent transition-colors"
+          >
+            <History className="w-4 h-4 text-accent shrink-0" />
+            <span
+              style={{
+                writingMode: "vertical-rl",
+                transform: "rotate(180deg)",
+              }}
+              className="leading-none tracking-widest"
+            >
+              History ({history.length})
+            </span>
+          </button>
         )}
 
         <main className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8">{children}</main>
