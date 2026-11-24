@@ -15,8 +15,10 @@ import {
   GitCompare,
   Globe,
   History,
+  Home,
   Lock,
   LogIn,
+  Menu,
   Moon,
   Save,
   Search,
@@ -91,6 +93,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
   const navigate = useNavigate();
 
   const [notifOpen, setNotifOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
 
@@ -185,7 +188,14 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
   };
 
   const navLinkClass = ({ isActive }: { isActive: boolean }) =>
-    `h-8 px-2.5 text-xs sm:text-sm font-medium rounded-sm transition-colors inline-flex items-center justify-center gap-1.5 leading-none ${
+    `h-8 px-2 lg:px-2.5 text-xs sm:text-sm font-medium rounded-sm transition-colors inline-flex items-center justify-center gap-1.5 leading-none shrink-0 ${
+      isActive
+        ? "bg-[#1E3A8A] dark:bg-[#2563EB] text-white"
+        : "text-muted hover:text-ink hover:bg-slate-100 dark:hover:bg-slate-800"
+    }`;
+
+  const mobileNavLinkClass = ({ isActive }: { isActive: boolean }) =>
+    `w-full px-3 py-2 text-xs font-medium rounded-sm transition-colors flex items-center gap-2 ${
       isActive
         ? "bg-[#1E3A8A] dark:bg-[#2563EB] text-white"
         : "text-muted hover:text-ink hover:bg-slate-100 dark:hover:bg-slate-800"
@@ -197,15 +207,20 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
     <div className="min-h-screen flex flex-col bg-canvas text-ink">
       {/* Top Navigation Bar */}
       <header
-        style={{ height: `${NAVBAR_HEIGHT_PX}px` }}
-        className="sticky top-0 z-30 bg-surface/95 backdrop-blur border-b border-border flex items-center"
+        style={{ minHeight: `${NAVBAR_HEIGHT_PX}px` }}
+        className="sticky top-0 z-30 bg-surface/95 backdrop-blur border-b border-border flex flex-col justify-center"
       >
-        <div className="w-full h-full max-w-[1640px] mx-auto px-4 flex items-center justify-between gap-3">
-          <div className="h-full flex items-center min-w-0">
+        <div
+          style={{ height: `${NAVBAR_HEIGHT_PX}px` }}
+          className="w-full max-w-[1640px] mx-auto px-3 sm:px-4 flex items-center justify-between gap-2 sm:gap-3"
+        >
+          {/* Logo Container: shrink-0 prevents navbar items from overlapping or crushing the logo */}
+          <div className="h-full flex items-center shrink-0">
             <Link
               to="/"
               aria-label="MiningFOMC Home"
-              className="h-full inline-flex items-center text-ink hover:text-accent transition-colors leading-none"
+              onClick={() => setMobileMenuOpen(false)}
+              className="h-full inline-flex items-center shrink-0 text-ink hover:text-accent transition-colors leading-none"
             >
               <span
                 className="inline-flex items-center justify-center shrink-0 text-ink leading-none"
@@ -214,45 +229,53 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
             </Link>
           </div>
 
-          <nav className="h-full flex items-center gap-1.5">
-            <NavLink to="/" end className={navLinkClass}>
-              Home
-            </NavLink>
-            <NavLink to="/team" className={navLinkClass}>
-              <Users className="w-3.5 h-3.5" />
-              Team
-            </NavLink>
+          <nav className="h-full flex items-center gap-1 sm:gap-1.5 shrink-0">
+            {/* Desktop / Tablet Primary Links */}
+            <div className="hidden md:flex items-center gap-1 lg:gap-1.5">
+              <NavLink to="/" end className={navLinkClass} title="Home">
+                <Home className="w-3.5 h-3.5 lg:hidden" />
+                <span>Home</span>
+              </NavLink>
+              <NavLink to="/team" className={navLinkClass} title="Team">
+                <Users className="w-3.5 h-3.5 shrink-0" />
+                <span>Team</span>
+              </NavLink>
+
+              {user && (
+                <>
+                  <NavLink to="/explorer" className={navLinkClass} title="Explorer">
+                    <Search className="w-3.5 h-3.5 shrink-0" />
+                    <span>Explorer</span>
+                  </NavLink>
+                  <NavLink to="/comparator" className={navLinkClass} title="Comparator">
+                    <GitCompare className="w-3.5 h-3.5 shrink-0" />
+                    <span>Comparator</span>
+                    {basket.length > 0 && (
+                      <span className="ml-0.5 px-1.5 py-0.5 bg-accent text-white font-mono text-[10px] rounded-sm">
+                        {basket.length}
+                      </span>
+                    )}
+                  </NavLink>
+                  <NavLink to="/portfolio" className={navLinkClass} title="Portfolio">
+                    <FolderKanban className="w-3.5 h-3.5 shrink-0" />
+                    <span className="hidden xl:inline">Portfolio</span>
+                  </NavLink>
+                  <NavLink to="/community" className={navLinkClass} title="Community">
+                    <BookOpen className="w-3.5 h-3.5 shrink-0" />
+                    <span className="hidden xl:inline">Community</span>
+                  </NavLink>
+                  {user.role === "admin" && (
+                    <NavLink to="/admin" className={navLinkClass} title="Admin">
+                      <Shield className="w-3.5 h-3.5 shrink-0" />
+                      <span className="hidden xl:inline">Admin</span>
+                    </NavLink>
+                  )}
+                </>
+              )}
+            </div>
 
             {user ? (
               <>
-                <NavLink to="/explorer" className={navLinkClass}>
-                  <Search className="w-3.5 h-3.5" />
-                  Explorer
-                </NavLink>
-                <NavLink to="/comparator" className={navLinkClass}>
-                  <GitCompare className="w-3.5 h-3.5" />
-                  Comparator
-                  {basket.length > 0 && (
-                    <span className="ml-0.5 px-1.5 bg-accent text-white font-mono text-[10px] rounded-sm">
-                      {basket.length}
-                    </span>
-                  )}
-                </NavLink>
-                <NavLink to="/portfolio" className={navLinkClass}>
-                  <FolderKanban className="w-3.5 h-3.5" />
-                  <span className="hidden md:inline">Portfolio</span>
-                </NavLink>
-                <NavLink to="/community" className={navLinkClass}>
-                  <BookOpen className="w-3.5 h-3.5" />
-                  <span className="hidden md:inline">Community</span>
-                </NavLink>
-                {user.role === "admin" && (
-                  <NavLink to="/admin" className={navLinkClass}>
-                    <Shield className="w-3.5 h-3.5" />
-                    Admin
-                  </NavLink>
-                )}
-
                 {/* In-App Notification Bell */}
                 <div className="relative inline-flex items-center">
                   <button
@@ -262,7 +285,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
                       loadNotifications();
                     }}
                     title="Notifications"
-                    className="relative h-8 w-8 inline-flex items-center justify-center text-muted hover:text-ink border border-border rounded-sm hover:border-accent transition-colors ml-0.5"
+                    className="relative h-8 w-8 inline-flex items-center justify-center text-muted hover:text-ink border border-border rounded-sm hover:border-accent transition-colors"
                   >
                     <Bell className="w-4 h-4" />
                     {unreadCount > 0 && (
@@ -273,7 +296,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
                   </button>
 
                   {notifOpen && (
-                    <div className="absolute right-0 mt-2 w-80 sm:w-96 panel shadow-lg z-50 overflow-hidden">
+                    <div className="absolute right-0 top-10 w-80 sm:w-96 panel shadow-lg z-50 overflow-hidden">
                       <div className="px-3.5 py-2.5 border-b border-border bg-zinc-50 flex items-center justify-between">
                         <span className="text-xs font-mono uppercase font-semibold text-ink">
                           Notifications ({unreadCount} unread)
@@ -337,15 +360,15 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
                   )}
                 </div>
 
-                <NavLink to="/profile" className={navLinkClass}>
-                  <User className="w-3.5 h-3.5" />
+                <NavLink to="/profile" className={navLinkClass} title={user.username}>
+                  <User className="w-3.5 h-3.5 shrink-0" />
                   <span className="hidden lg:inline">{user.username}</span>
                 </NavLink>
               </>
             ) : (
               <NavLink to="/login" className={navLinkClass}>
-                <LogIn className="w-3.5 h-3.5" />
-                Sign In
+                <LogIn className="w-3.5 h-3.5 shrink-0" />
+                <span>Sign In</span>
               </NavLink>
             )}
 
@@ -355,7 +378,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
               onClick={toggleTheme}
               title={isDark ? "Switch to Light Mode" : "Switch to Dark Mode"}
               aria-label={isDark ? "Switch to Light Mode" : "Switch to Dark Mode"}
-              className="h-8 w-8 inline-flex items-center justify-center text-muted hover:text-ink border border-border rounded-sm hover:border-accent transition-colors ml-0.5"
+              className="h-8 w-8 inline-flex items-center justify-center text-muted hover:text-ink border border-border rounded-sm hover:border-accent transition-colors shrink-0"
             >
               {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
@@ -363,7 +386,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
             {/* Dynamic Database Version Selector at Rightmost End of Navbar */}
             {availableDbVersions.length > 0 && (
               <div
-                className="h-8 inline-flex items-center gap-1.5 px-2.5 border border-border rounded-sm bg-canvas text-xs font-mono ml-0.5 leading-none"
+                className="h-8 inline-flex items-center gap-1 px-2 border border-border rounded-sm bg-canvas text-xs font-mono leading-none shrink-0"
                 title={
                   activeDbVersion?.notes
                     ? `DB ${activeDbVersion.tag} — ${activeDbVersion.notes}`
@@ -371,7 +394,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
                 }
               >
                 <Database className="w-3.5 h-3.5 text-accent shrink-0" />
-                <span className="hidden md:inline text-[11px] text-muted uppercase">DB:</span>
+                <span className="hidden xl:inline text-[11px] text-muted uppercase">DB:</span>
                 <select
                   aria-label="Select Database Version"
                   disabled={switchingDbVersion}
@@ -381,19 +404,102 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
                       switchDbVersion(e.target.value);
                     }
                   }}
-                  className="bg-transparent text-ink font-semibold text-xs focus:outline-none cursor-pointer pr-1 leading-none"
+                  className="bg-transparent text-ink font-semibold text-xs focus:outline-none cursor-pointer pr-0.5 leading-none"
                 >
                   {availableDbVersions.map((v) => (
                     <option key={v.version} value={v.version} className="bg-surface text-ink">
                       {v.tag}
-                      {v.total_human_size ? ` (${v.total_human_size})` : ""}
                     </option>
                   ))}
                 </select>
               </div>
             )}
+
+            {/* Mobile Hamburger Menu Button (< md) */}
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen((v) => !v)}
+              aria-label="Toggle navigation menu"
+              className="md:hidden h-8 w-8 inline-flex items-center justify-center text-muted hover:text-ink border border-border rounded-sm hover:border-accent transition-colors shrink-0"
+            >
+              {mobileMenuOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
+            </button>
           </nav>
         </div>
+
+        {/* Responsive Mobile Dropdown Menu (< md) */}
+        {mobileMenuOpen && (
+          <div className="md:hidden border-t border-border bg-surface px-4 py-3 space-y-1 shadow-lg">
+            <NavLink
+              to="/"
+              end
+              onClick={() => setMobileMenuOpen(false)}
+              className={mobileNavLinkClass}
+            >
+              <Home className="w-3.5 h-3.5" />
+              <span>Home</span>
+            </NavLink>
+            <NavLink
+              to="/team"
+              onClick={() => setMobileMenuOpen(false)}
+              className={mobileNavLinkClass}
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span>Team</span>
+            </NavLink>
+            {user && (
+              <>
+                <NavLink
+                  to="/explorer"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className={mobileNavLinkClass}
+                >
+                  <Search className="w-3.5 h-3.5" />
+                  <span>Explorer</span>
+                </NavLink>
+                <NavLink
+                  to="/comparator"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className={mobileNavLinkClass}
+                >
+                  <GitCompare className="w-3.5 h-3.5" />
+                  <span>Comparator</span>
+                  {basket.length > 0 && (
+                    <span className="ml-auto px-1.5 py-0.5 bg-accent text-white font-mono text-[10px] rounded-sm">
+                      {basket.length}
+                    </span>
+                  )}
+                </NavLink>
+                <NavLink
+                  to="/portfolio"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className={mobileNavLinkClass}
+                >
+                  <FolderKanban className="w-3.5 h-3.5" />
+                  <span>Portfolio</span>
+                </NavLink>
+                <NavLink
+                  to="/community"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className={mobileNavLinkClass}
+                >
+                  <BookOpen className="w-3.5 h-3.5" />
+                  <span>Community</span>
+                </NavLink>
+                {user.role === "admin" && (
+                  <NavLink
+                    to="/admin"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className={mobileNavLinkClass}
+                  >
+                    <Shield className="w-3.5 h-3.5" />
+                    <span>Admin</span>
+                  </NavLink>
+                )}
+              </>
+            )}
+          </div>
+        )}
       </header>
 
       {/* Main Layout Shell with Collapsible History Sidebar & Aligned Peeking Side Tab */}
