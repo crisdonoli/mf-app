@@ -25,7 +25,7 @@ import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 from ..config import CORPUS_MAX_DATE, CORPUS_MAX_YEAR, CORPUS_MIN_YEAR, Settings, get_settings
-from .cache import BoundedDict, TTLCache, approx_size
+from .cache import BoundedDict, SharedSearchCache, approx_size
 from .taxonomy import resolve_column_labels
 
 try:
@@ -48,7 +48,7 @@ _DOC_IDS_BY_YEAR_CACHE: BoundedDict = BoundedDict(max_entries=8)
 _DOC_SPEAKER_META_CACHE: BoundedDict = BoundedDict(max_entries=8)
 _SIM_YEAR_CACHE: BoundedDict = BoundedDict(max_entries=4)
 _ZS_YEAR_CACHE: BoundedDict = BoundedDict(max_entries=4)
-_SEARCH_CACHE = TTLCache(
+_SEARCH_CACHE = SharedSearchCache(
     "search",
     max_entries=48,
     ttl_s=900,

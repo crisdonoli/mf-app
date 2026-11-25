@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,15 +19,20 @@ from ..core.taxonomy import format_doc_type
 try:
     from sqlalchemy import (
         Boolean,
+        DateTime,
         ForeignKey,
         Integer,
         String,
         Text,
         UniqueConstraint,
         create_engine,
+        delete,
+        func,
         or_,
         select,
     )
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
     from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
 
     HAS_SQLALCHEMY = True
@@ -37,6 +42,10 @@ except ImportError:  # pragma: no cover
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 _FORBIDDEN_RAW_CONFIG_KEYS = {
     "results",
@@ -176,6 +185,14 @@ if HAS_SQLALCHEMY:
         is_read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
         created_at: Mapped[str] = mapped_column(String(64), default=_utc_now_iso)
 
+    class SearchCacheEntry(Base):
+        __tablename__ = "search_cache"
+        cache_key: Mapped[str] = mapped_column(String(512), primary_key=True)
+        result_json: Mapped[str] = mapped_column(Text, nullable=False)
+        size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+        created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now)
+        expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+
 
 class AppRepository:
     """Unified persistence repository for MiningFOMC V2."""
@@ -196,6 +213,7 @@ class AppRepository:
             connect_args = {"check_same_thread": False} if self.database_url.startswith("sqlite") else {}
             self._engine = create_engine(self.database_url, connect_args=connect_args, future=True)
             Base.metadata.create_all(self._engine)
+            self.ensure_search_cache_table()
             self._migrate_sqlite_columns()
         else:
             if self._sqlite_path is None:
@@ -1513,6 +1531,82 @@ class AppRepository:
         with self._sqlite_conn() as conn:
             conn.execute("DELETE FROM search_history WHERE user_id = ?", (user_id,))
             conn.commit()
+
+    # ------------------------------------------------------------- Search cache (L2)
+    def ensure_search_cache_table(self) -> None:
+        if HAS_SQLALCHEMY and self._engine is not None:
+            Base.metadata.create_all(self._engine, tables=[SearchCacheEntry.__table__])
+
+    def get_cached_search(self, cache_key: str) -> str | None:
+        if not HAS_SQLALCHEMY or self._engine is None:
+            return None
+        now = _utc_now()
+        with Session(self._engine) as session:
+            row = session.get(SearchCacheEntry, cache_key)
+            if row is None:
+                return None
+            if row.expires_at <= now:
+                session.delete(row)
+                session.commit()
+                return None
+            return row.result_json
+
+    def set_cached_search(self, cache_key: str, result_json: str, size_bytes: int, ttl_s: float = 900) -> None:
+        if not HAS_SQLALCHEMY or self._engine is None:
+            return
+        now = _utc_now()
+        values = {
+            "cache_key": cache_key,
+            "result_json": result_json,
+            "size_bytes": size_bytes,
+            "created_at": now,
+            "expires_at": now + timedelta(seconds=ttl_s),
+        }
+        insert_fn = pg_insert if self._engine.dialect.name == "postgresql" else sqlite_insert
+        stmt = insert_fn(SearchCacheEntry).values(**values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["cache_key"],
+            set_={
+                "result_json": stmt.excluded.result_json,
+                "size_bytes": stmt.excluded.size_bytes,
+                "expires_at": stmt.excluded.expires_at,
+            },
+        )
+        with Session(self._engine) as session:
+            session.execute(stmt)
+            session.commit()
+
+    def purge_search_cache(self, prefix: str | None = None) -> None:
+        if not HAS_SQLALCHEMY or self._engine is None:
+            return
+        with Session(self._engine) as session:
+            if prefix:
+                session.execute(
+                    delete(SearchCacheEntry).where(SearchCacheEntry.cache_key.like(f"{prefix}%"))
+                )
+            else:
+                session.execute(delete(SearchCacheEntry))
+            session.execute(delete(SearchCacheEntry).where(SearchCacheEntry.expires_at <= _utc_now()))
+            session.commit()
+
+    def search_cache_stats(self) -> dict[str, Any]:
+        if not HAS_SQLALCHEMY or self._engine is None:
+            return {"entries": 0, "total_bytes": 0, "oldest": None, "newest": None}
+        with Session(self._engine) as session:
+            entries, total_bytes, oldest, newest = session.execute(
+                select(
+                    func.count(SearchCacheEntry.cache_key),
+                    func.coalesce(func.sum(SearchCacheEntry.size_bytes), 0),
+                    func.min(SearchCacheEntry.created_at),
+                    func.max(SearchCacheEntry.created_at),
+                )
+            ).one()
+        return {
+            "entries": int(entries or 0),
+            "total_bytes": int(total_bytes or 0),
+            "oldest": oldest.isoformat() if oldest else None,
+            "newest": newest.isoformat() if newest else None,
+        }
 
 
 _repo: AppRepository | None = None

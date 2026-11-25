@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from collections import OrderedDict
 from typing import Any, Callable, TypeVar
 
 T = TypeVar("T")
+
+LOGGER = logging.getLogger(__name__)
+
+
+def get_repository():
+    from ..db.repository import get_repository as _get_repository
+
+    return _get_repository()
 
 
 def approx_size(obj: Any) -> int:
@@ -116,6 +125,81 @@ class TTLCache:
                 "bytes": self._bytes,
                 "name": self.name,
             }
+
+
+class SharedSearchCache:
+    """Two-tier cache: per-worker in-memory L1 plus a shared SQL-backed L2.
+
+    L2 is best-effort. Any backend failure degrades to L1-only behaviour.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        max_entries: int,
+        ttl_s: float,
+        max_bytes: int | None = None,
+        size_fn: Callable[[Any], int] | None = None,
+    ) -> None:
+        self.name = name
+        self.ttl_s = ttl_s
+        self._l1 = TTLCache(
+            name,
+            max_entries=max_entries,
+            ttl_s=ttl_s,
+            max_bytes=max_bytes,
+            size_fn=size_fn,
+        )
+
+    def _l2_key(self, key: Any) -> str:
+        return f"{self.name}:{json.dumps(key, default=str, separators=(',', ':'))}"
+
+    def get(self, key: Any) -> tuple[bool, Any]:
+        hit, value = self._l1.get(key)
+        if hit:
+            return True, value
+        try:
+            raw = get_repository().get_cached_search(self._l2_key(key))
+        except Exception as exc:
+            LOGGER.warning("Shared search cache L2 read failed: %s", exc)
+            return False, None
+        if raw is None:
+            return False, None
+        value = json.loads(raw)
+        self._l1.set(key, value)
+        return True, value
+
+    def set(self, key: Any, value: Any) -> None:
+        self._l1.set(key, value)
+        try:
+            raw = json.dumps(value, default=str)
+            get_repository().set_cached_search(self._l2_key(key), raw, len(raw.encode()), self.ttl_s)
+        except Exception as exc:
+            LOGGER.warning("Shared search cache L2 write failed: %s", exc)
+
+    def get_or_compute(self, key: Any, compute: Callable[[], T]) -> T:
+        hit, value = self.get(key)
+        if hit:
+            return value
+        value = compute()
+        self.set(key, value)
+        return value
+
+    def clear(self, prefix: str | None = None) -> None:
+        self._l1.clear()
+        try:
+            get_repository().purge_search_cache(prefix)
+        except Exception as exc:
+            LOGGER.warning("Shared search cache L2 purge failed: %s", exc)
+
+    def stats(self) -> dict[str, Any]:
+        merged = self._l1.stats()
+        try:
+            merged["l2"] = get_repository().search_cache_stats()
+        except Exception as exc:
+            LOGGER.warning("Shared search cache L2 stats failed: %s", exc)
+            merged["l2"] = {"entries": 0, "total_bytes": 0, "oldest": None, "newest": None, "error": str(exc)}
+        return merged
 
 
 class BoundedDict(OrderedDict):
