@@ -14,7 +14,17 @@ from typing import List, Optional
 import numpy as np
 import pyarrow.parquet as pq
 
-BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend"
+BACKEND_DIR = None
+for candidate in (
+    Path(__file__).resolve().parents[1] / "backend",  # repo local: fomc-app/backend
+    Path("/app"),  # contenedor Docker (WORKDIR)
+    Path("/app/backend"),
+):
+    if (candidate / "app" / "config.py").is_file():
+        BACKEND_DIR = candidate
+        break
+if BACKEND_DIR is None:
+    raise SystemExit("No se encontró el directorio backend (app/config.py).")
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
