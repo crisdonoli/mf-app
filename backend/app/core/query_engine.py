@@ -24,6 +24,7 @@ import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 from ..config import CORPUS_MAX_DATE, CORPUS_MAX_YEAR, CORPUS_MIN_YEAR, Settings, get_settings
+from .cache import BoundedDict, TTLCache, approx_size
 from .taxonomy import resolve_column_labels
 
 try:
@@ -37,23 +38,43 @@ except ImportError:  # pragma: no cover
 _YEAR_RE = re.compile(r"year=(\d{4})")
 _SUBCHUNK_RE = re.compile(r"_s\d+$")
 
-# Lightweight module-level cache for speaker autocomplete catalog, corpus stats, and yearly slices keyed by source paths
-_SPEAKER_CATALOG_CACHE: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
-_CORPUS_STATS_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
-_DOC_IDS_BY_YEAR_CACHE: dict[tuple[str, str, str], dict[str, list[str]]] = {}
-_DOC_SPEAKER_META_CACHE: dict[tuple[str, str, str], dict[str, list[dict[str, Any]]]] = {}
-_SIM_YEAR_CACHE: dict[tuple[str, str, str], tuple[dict[str, np.ndarray], list[str]]] = {}
-_ZS_YEAR_CACHE: dict[tuple[str, str, str], tuple[dict[str, np.ndarray], list[str]]] = {}
+# Bounded module-level caches keyed by source paths. Hard caps keep the 1.86 GiB host safe.
+_SPEAKER_CATALOG_CACHE: BoundedDict = BoundedDict(max_entries=8)
+_CORPUS_STATS_CACHE: BoundedDict = BoundedDict(max_entries=8)
+_DOC_IDS_BY_YEAR_CACHE: BoundedDict = BoundedDict(max_entries=8)
+_DOC_SPEAKER_META_CACHE: BoundedDict = BoundedDict(max_entries=8)
+_SIM_YEAR_CACHE: BoundedDict = BoundedDict(max_entries=4)
+_ZS_YEAR_CACHE: BoundedDict = BoundedDict(max_entries=4)
+_SEARCH_CACHE = TTLCache(
+    "search",
+    max_entries=48,
+    ttl_s=900,
+    max_bytes=64 * 1024 * 1024,
+    size_fn=approx_size,
+)
+
+
+def cache_stats() -> dict[str, Any]:
+    return {
+        "search": _SEARCH_CACHE.stats(),
+        "speaker_catalog": {"entries": len(_SPEAKER_CATALOG_CACHE), "max_entries": _SPEAKER_CATALOG_CACHE.max_entries},
+        "corpus_stats": {"entries": len(_CORPUS_STATS_CACHE), "max_entries": _CORPUS_STATS_CACHE.max_entries},
+        "doc_ids": {"entries": len(_DOC_IDS_BY_YEAR_CACHE), "max_entries": _DOC_IDS_BY_YEAR_CACHE.max_entries},
+        "doc_speaker_meta": {"entries": len(_DOC_SPEAKER_META_CACHE), "max_entries": _DOC_SPEAKER_META_CACHE.max_entries},
+        "sim_year": {"entries": len(_SIM_YEAR_CACHE), "max_entries": _SIM_YEAR_CACHE.max_entries},
+        "zs_year": {"entries": len(_ZS_YEAR_CACHE), "max_entries": _ZS_YEAR_CACHE.max_entries},
+    }
 
 
 def clear_speaker_catalog_cache() -> None:
-    """Reset the cached speaker autocomplete catalog, corpus stats, and partition caches (used in tests or reload)."""
+    """Reset the cached speaker autocomplete catalog, corpus stats, partition caches, and search results."""
     _SPEAKER_CATALOG_CACHE.clear()
     _CORPUS_STATS_CACHE.clear()
     _DOC_IDS_BY_YEAR_CACHE.clear()
     _DOC_SPEAKER_META_CACHE.clear()
     _SIM_YEAR_CACHE.clear()
     _ZS_YEAR_CACHE.clear()
+    _SEARCH_CACHE.clear()
 
 
 def _norm_speaker(name: str) -> str:
@@ -522,6 +543,46 @@ class ParquetQueryEngine:
         elif doc_type:
             eff_types = [d.strip() for d in doc_type.split(",") if d.strip()]
 
+        # Skip caching oversized pages: they are rare and would blow the 64 MiB byte budget.
+        if limit > 500:
+            return self._search_documents_uncached(
+                eff_from, eff_to, eff_meeting, speaker, gender, eff_types, query_text, use_regex, limit, offset
+            )
+
+        key = (
+            "search",
+            self.settings.resolve_db_version_info().get("version") or "",
+            eff_from,
+            eff_to,
+            eff_meeting,
+            tuple(eff_types),
+            speaker,
+            gender,
+            query_text,
+            use_regex,
+            limit,
+            offset,
+        )
+        return _SEARCH_CACHE.get_or_compute(
+            key,
+            lambda: self._search_documents_uncached(
+                eff_from, eff_to, eff_meeting, speaker, gender, eff_types, query_text, use_regex, limit, offset
+            ),
+        )
+
+    def _search_documents_uncached(
+        self,
+        eff_from: str | None,
+        eff_to: str | None,
+        eff_meeting: str | None,
+        speaker: str | None,
+        gender: str | None,
+        eff_types: list[str],
+        query_text: str | None,
+        use_regex: bool,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[dict[str, Any]], int]:
         meta_dir = self.settings.resolve_text_metadata_dir()
         if eff_types == ["agenda_items"] and not (meta_dir / "doc_type=agenda_items").is_dir():
             return self._search_agendas(

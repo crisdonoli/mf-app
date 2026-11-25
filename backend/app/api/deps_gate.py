@@ -49,7 +49,10 @@ def corpus_query_slot():
 
 
 def gate_stats_snapshot() -> dict:
+    from ..core.query_engine import cache_stats
+
     return {
         "heavy": get_gate("heavy").stats(),
         "corpus": get_gate("corpus").stats(),
+        "caches": cache_stats(),
     }
