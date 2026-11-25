@@ -33,6 +33,7 @@ import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { useWorkspace } from "../context/WorkspaceContext";
 import { api } from "../lib/api";
+import { QueueBanner } from "./QueueBanner";
 import fenDarkLogo from "../static/fen-dark.webp";
 import fenLightLogo from "../static/fen-light.webp";
 import fomcLogoRaw from "../static/fomc-logo.svg?raw";
@@ -506,6 +507,8 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
           </div>
         )}
       </header>
+
+      <QueueBanner />
 
       {/* Main Layout Shell with Collapsible History Sidebar & Aligned Peeking Side Tab */}
       <div className="flex-1 flex max-w-[1640px] w-full mx-auto relative">

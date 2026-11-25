@@ -39,6 +39,11 @@ import type {
   TreePreviewResponse,
   UserPublic,
 } from "../types/api";
+import {
+  isCancelled,
+  pushQueueStatus,
+  resetQueueStatus,
+} from "./queueStatus";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) || "";
 const TOKEN_KEY = "miningfomc_jwt_token";
@@ -55,7 +60,40 @@ export function setStoredToken(token: string | null): void {
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+const RETRY_MAX_ATTEMPTS = 6;
+const RETRY_MIN_DELAY_MS = 800;
+const RETRY_MAX_DELAY_MS = 8000;
+const RETRY_JITTER_MS = 250;
+const QUEUE_GATE_HEADER = "X-Query-Gate";
+
+export class ApiError extends Error {
+  status: number;
+  gate?: string;
+  position?: number;
+  etaS?: number;
+
+  constructor(
+    message: string,
+    status: number,
+    meta: { gate?: string; position?: number; etaS?: number } = {}
+  ) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.gate = meta.gate;
+    this.position = meta.position;
+    this.etaS = meta.etaS;
+  }
+}
+
+function readIntHeader(res: Response, name: string): number | undefined {
+  const raw = res.headers.get(name);
+  if (raw === null) return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+async function doFetch(path: string, init: RequestInit): Promise<Response> {
   const token = getStoredToken();
   const headers = new Headers(init.headers);
   if (!headers.has("Content-Type") && init.body) {
@@ -64,22 +102,84 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
   }
+  return fetch(`${API_BASE}${path}`, { ...init, headers });
+}
 
-  const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
-  if (!res.ok) {
-    let detail = `Request failed (${res.status})`;
-    try {
-      const err = await res.json();
-      if (typeof err?.detail === "string") detail = err.detail;
-    } catch {
-      // ignore
+async function readErrorDetail(res: Response): Promise<string> {
+  let detail = `Request failed (${res.status})`;
+  try {
+    const err = await res.json();
+    if (typeof err?.detail === "string") detail = err.detail;
+  } catch {
+    // ignore
+  }
+  return detail;
+}
+
+function retryDelayMs(retryAfterS: number | undefined, attempt: number): number {
+  const base = Math.max((retryAfterS ?? 0) * 1000, RETRY_MIN_DELAY_MS);
+  const backoff = Math.min(base * 2 ** (attempt - 1), RETRY_MAX_DELAY_MS);
+  return backoff + Math.random() * RETRY_JITTER_MS;
+}
+
+async function waitBeforeRetry(ms: number): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!isCancelled() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(100, deadline - Date.now())));
+  }
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    const res = await doFetch(path, init);
+    const gate = res.headers.get(QUEUE_GATE_HEADER);
+
+    if (res.status === 503 && gate !== null) {
+      const position = readIntHeader(res, "X-Queue-Position") ?? 0;
+      const etaS = readIntHeader(res, "X-Queue-Eta-S") ?? 0;
+      if (attempt >= RETRY_MAX_ATTEMPTS) {
+        resetQueueStatus();
+        throw new ApiError(
+          "El servidor sigue ocupado con otros cálculos. Intenta de nuevo en unos instantes.",
+          503,
+          { gate, position, etaS }
+        );
+      }
+      pushQueueStatus({
+        active: true,
+        gate,
+        position,
+        etaS,
+        attempt: attempt + 1,
+        maxAttempts: RETRY_MAX_ATTEMPTS,
+        cancelled: false,
+      });
+      await waitBeforeRetry(retryDelayMs(readIntHeader(res, "Retry-After"), attempt));
+      if (isCancelled()) {
+        resetQueueStatus();
+        throw new ApiError("Consulta cancelada por el usuario", 499);
+      }
+      continue;
     }
-    throw new Error(detail);
+
+    if (!res.ok) {
+      const detail = await readErrorDetail(res);
+      const position = readIntHeader(res, "X-Queue-Position");
+      const etaS = readIntHeader(res, "X-Queue-Eta-S");
+      resetQueueStatus();
+      throw new ApiError(detail, res.status, {
+        gate: gate ?? undefined,
+        position,
+        etaS,
+      });
+    }
+
+    resetQueueStatus();
+    if (res.status === 204) {
+      return undefined as T;
+    }
+    return (await res.json()) as T;
   }
-  if (res.status === 204) {
-    return undefined as T;
-  }
-  return (await res.json()) as T;
 }
 
 function qs(params: Record<string, string | number | boolean | undefined | null>): string {

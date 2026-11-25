@@ -190,6 +190,26 @@ class Settings:
         default_factory=lambda: int(os.getenv("DUCKDB_THREADS", "4"))
     )
 
+    # Concurrency gates for CPU-heavy endpoints (per-process semaphores)
+    heavy_query_max_concurrency: int = field(
+        default_factory=lambda: int(os.getenv("HEAVY_QUERY_MAX_CONCURRENCY", "2"))
+    )
+    heavy_query_wait_timeout_s: float = field(
+        default_factory=lambda: float(os.getenv("HEAVY_QUERY_WAIT_TIMEOUT_S", "25.0"))
+    )
+    heavy_query_max_queue: int = field(
+        default_factory=lambda: int(os.getenv("HEAVY_QUERY_MAX_QUEUE", "6"))
+    )
+    corpus_query_max_concurrency: int = field(
+        default_factory=lambda: int(os.getenv("CORPUS_QUERY_MAX_CONCURRENCY", "4"))
+    )
+    heavy_query_grace_s: float = field(
+        default_factory=lambda: float(os.getenv("HEAVY_QUERY_GRACE_S", "1.2"))
+    )
+    corpus_query_grace_s: float = field(
+        default_factory=lambda: float(os.getenv("CORPUS_QUERY_GRACE_S", "0.6"))
+    )
+
     # ------------------------------------------------------------------ Resolvers
     def resolve_text_metadata_dir(self) -> Path:
         candidates = [

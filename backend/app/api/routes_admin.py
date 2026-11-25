@@ -8,6 +8,7 @@ from ..auth.security import hash_password, require_admin
 from ..core.corrections_ledger import append_accepted_fix
 from ..db.repository import get_repository
 from ..schemas import AdminResolveFixRequest, AdminUserUpdateRequest, UserPublic
+from .deps_gate import gate_stats_snapshot
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
 
@@ -52,6 +53,11 @@ def admin_delete_user(user_id: int, admin: dict = Depends(require_admin)):
 @router.get("/activity")
 def admin_user_activity(_admin: dict = Depends(require_admin)):
     return {"items": get_repository().list_all_activity(limit=100)}
+
+
+@router.get("/query-gates")
+def admin_query_gates(_admin: dict = Depends(require_admin)):
+    return gate_stats_snapshot()
 
 
 @router.get("/fix-requests")

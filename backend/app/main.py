@@ -65,6 +65,12 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
+        expose_headers=[
+            "X-Query-Gate",
+            "X-Queue-Position",
+            "X-Queue-Eta-S",
+            "Retry-After",
+        ],
     )
 
     app.include_router(explorer_router)

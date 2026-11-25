@@ -25,6 +25,7 @@ from ..core import (
     search_speakers,
 )
 from ..core.fomc_service import get_classification_inspector
+from .deps_gate import corpus_query_slot
 
 router = APIRouter(prefix="/api", tags=["Explorer & Corpus"])
 
@@ -49,7 +50,7 @@ def health_check():
 
 
 @router.get("/stats")
-def corpus_stats():
+def corpus_stats(_gate: None = Depends(corpus_query_slot)):
     """Return high-level corpus statistics for the public Landing Page."""
     cfg = get_settings()
     stats = get_corpus_stats()
@@ -126,6 +127,7 @@ def explorer_search(
     limit: int = Query(default=25, ge=1, le=2000),
     offset: int = Query(default=0, ge=0),
     _user: dict = Depends(get_current_user),
+    _gate: None = Depends(corpus_query_slot),
 ):
     parsed_doc_types: list[str] = []
     if doc_types:
@@ -184,6 +186,7 @@ def document_chunks(
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     _user: dict = Depends(get_current_user),
+    _gate: None = Depends(corpus_query_slot),
 ):
     parsed_ids = [c.strip() for c in chunk_ids.split(",") if c.strip()] if chunk_ids else None
     return get_document_chunks(
@@ -203,6 +206,7 @@ def document_zero_shot(
     speaker: Optional[str] = Query(default=None),
     chunk_id: Optional[str] = Query(default=None),
     _user: dict = Depends(get_current_user),
+    _gate: None = Depends(corpus_query_slot),
 ):
     """Inspect zero-shot 13 macro-category and sub-class predictions."""
     return get_classification_inspector(
@@ -234,6 +238,7 @@ def document_similarity(
     macro_category: Optional[str] = Query(default=None),
     max_chunks: int = Query(default=250, ge=10, le=1000),
     _user: dict = Depends(get_current_user),
+    _gate: None = Depends(corpus_query_slot),
 ):
     return get_similarity_matrix(
         doc_type,

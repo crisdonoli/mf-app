@@ -15,6 +15,7 @@ from ..core.grouping_tree import (
     inspect_slice_or_node,
 )
 from ..schemas import CompareRequest, SliceInspectRequest, SplitLevelConfig, TreePreviewRequest
+from .deps_gate import heavy_query_slot
 
 router = APIRouter(prefix="/api/comparator", tags=["Comparator"])
 
@@ -34,6 +35,7 @@ def _serialize_split_level(lvl: SplitLevelConfig) -> dict:
 def preview_grouping_tree(
     body: TreePreviewRequest,
     _user: dict = Depends(get_current_user),
+    _gate: None = Depends(heavy_query_slot),
 ):
     """Compute hierarchical Grouping Tree counts and visible leaf availability (>= 1)."""
     docs = [{"doc_type": d.doc_type, "meeting_date": d.meeting_date} for d in body.documents]
@@ -54,6 +56,7 @@ def preview_grouping_tree(
 def inspect_comparator_slice(
     body: SliceInspectRequest,
     _user: dict = Depends(get_current_user),
+    _gate: None = Depends(heavy_query_slot),
 ):
     """Inspect documents and chunks belonging to any clicked tree node or time-series point."""
     docs = [{"doc_type": d.doc_type, "meeting_date": d.meeting_date} for d in body.documents]
@@ -79,6 +82,7 @@ def inspect_comparator_slice(
 def compare_fomc_documents(
     body: CompareRequest,
     _user: dict = Depends(get_current_user),
+    _gate: None = Depends(heavy_query_slot),
 ):
     """Standardize, optionally combine via Grouping Tree, and flatten chronologically across M x S slices."""
     docs = [
@@ -143,6 +147,7 @@ def compare_fomc_documents(
 def export_comparator_csv(
     body: CompareRequest,
     _user: dict = Depends(get_current_user),
+    _gate: None = Depends(heavy_query_slot),
 ):
     """Export the full flattened chronological dataset across all cohorts, periods, and slices as CSV."""
     payload = compare_fomc_documents(body, _user)
