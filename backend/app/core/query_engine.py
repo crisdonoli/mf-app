@@ -1426,13 +1426,17 @@ class ParquetQueryEngine:
         ordered_ids = self.get_ordered_chunk_ids(doc_type, meeting_date)
         cache_key = (str(sim_root), doc_type, year)
 
-        if cache_key not in _SIM_YEAR_CACHE and cache_path.is_file():
+        if cache_key not in _SIM_YEAR_CACHE and sim_year_dir.is_dir() and cache_path.is_file():
             try:
                 with np.load(cache_path) as data:
                     disk_ids = [str(c) for c in data["chunk_ids"]]
                     disk_matrix = data["matrix"].astype(np.float32, copy=False)
                     disk_labels = [str(l) for l in data["labels"]]
-                if disk_matrix.shape[0] == len(disk_ids) and disk_matrix.shape[1] == len(disk_labels):
+                if (
+                    disk_matrix.shape[0] == len(disk_ids)
+                    and disk_matrix.shape[1] == len(disk_labels)
+                    and (not ordered_ids or disk_ids == ordered_ids)
+                ):
                     vec_map = {cid: disk_matrix[i] for i, cid in enumerate(disk_ids)}
                     _SIM_YEAR_CACHE[cache_key] = (vec_map, disk_labels)
                     return disk_ids, disk_matrix, disk_labels

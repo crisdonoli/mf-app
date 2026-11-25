@@ -373,12 +373,18 @@ class Settings:
 
     def resolve_matrix_cache_dir(self) -> Path:
         candidates = [
-            self.resolve_similarities_dir().parent / "matrix_cache",
+            Path("/tmp/matrix_cache"),
             self.fomc_data_dir / "matrix_cache",
-            _MONOREPO_ROOT / "fomc-data" / "matrix_cache",
+            self.resolve_similarities_dir().parent / "matrix_cache",
         ]
-        target = next((path for path in candidates if path.parent.is_dir()), candidates[0])
-        target.mkdir(parents=True, exist_ok=True)
+        target = next(
+            (path for path in candidates if path.parent.is_dir() and os.access(path.parent, os.W_OK)),
+            Path("/tmp/matrix_cache"),
+        )
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            LOGGER.warning("matrix cache dir not writable %s: %s", target, exc)
         return target
 
     def resolve_labels_dir(self) -> Path:

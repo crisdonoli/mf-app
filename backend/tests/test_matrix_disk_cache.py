@@ -68,7 +68,8 @@ def build_dataset(root: Path) -> Path:
 
 
 def cache_file(root: Path, meeting_date: str) -> Path:
-    return root / "similarities" / "model=bge-m3" / "matrix_cache" / "transcripts" / f"{meeting_date}.npz"
+    settings = Settings(fomc_data_dir=root)
+    return settings.resolve_matrix_cache_dir() / "transcripts" / f"{meeting_date}.npz"
 
 
 def test_first_call_persists_and_second_reads_disk(tmp_path):

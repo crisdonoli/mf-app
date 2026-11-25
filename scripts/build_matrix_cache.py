@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -65,6 +66,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     settings = Settings(fomc_data_dir=Path(args.data_dir))
     engine = ParquetQueryEngine(settings)
     output_dir = Path(args.output_dir) if args.output_dir else settings.resolve_matrix_cache_dir()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if not os.access(output_dir, os.W_OK):
+        print(f"error: matrix cache dir not writable: {output_dir}", file=sys.stderr)
+        return 1
     metadata_dir = settings.resolve_text_metadata_dir()
 
     doc_types = (
