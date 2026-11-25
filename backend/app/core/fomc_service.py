@@ -30,7 +30,7 @@ from .matrix_math import (
     project_matrix_granularity,
     transform_matrix,
 )
-from .query_engine import ParquetQueryEngine, _norm_speaker
+from .query_engine import ParquetQueryEngine, _norm_speaker, _speaker_surname_key
 from .taxonomy import (
     LEAF_TO_MACRO,
     MACRO_CATEGORIES,
@@ -581,6 +581,13 @@ def _date_group_key(meeting_date: str, mode: str, year_range_span: int) -> str:
     return meeting_date
 
 
+def _roster_lookup(roster: dict[str, dict[str, str]], speaker: str) -> dict[str, str]:
+    for key in (_norm_speaker(speaker), _speaker_surname_key(speaker)):
+        if key and key in roster:
+            return roster[key]
+    return {}
+
+
 def _participant_group_key(
     chunk: dict[str, Any],
     mode: str,
@@ -592,11 +599,11 @@ def _participant_group_key(
     if mode == "speaker_role":
         role = (chunk.get("speaker_role") or "").strip()
         if not role and sp != "Unattributed":
-            role = roster.get(_norm_speaker(sp), {}).get("role", "")
+            role = _roster_lookup(roster, sp).get("role", "")
         return role or "Unknown Role"
     g_val = ""
     if sp != "Unattributed":
-        g_val = roster.get(_norm_speaker(sp), {}).get("gender", "")
+        g_val = _roster_lookup(roster, sp).get("gender", "")
     return g_val or "Unknown Gender"
 
 

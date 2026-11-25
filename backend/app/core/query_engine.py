@@ -91,6 +91,43 @@ def _norm_speaker(name: str) -> str:
     return " ".join(cleaned.split())
 
 
+_SPEAKER_TITLES = {
+    "mr",
+    "ms",
+    "mrs",
+    "dr",
+    "messrs",
+    "mister",
+    "madam",
+    "chairman",
+    "chair",
+    "vice",
+    "president",
+    "governor",
+}
+
+
+def _speaker_surname_key(name: str) -> str:
+    """Return the normalized surname token, dropping honorifics and title suffixes."""
+    primary = (name or "").split(",", 1)[0]
+    tokens = [
+        token
+        for token in _norm_speaker(primary).split()
+        if token not in _SPEAKER_TITLES
+    ]
+    return tokens[-1] if tokens else ""
+
+
+def _normalize_gender(value: Any) -> str:
+    """Canonicalize gender values from flat/legacy participant sources."""
+    norm = str(value or "").strip().lower()
+    if norm in {"m", "male"}:
+        return "Male"
+    if norm in {"f", "female"}:
+        return "Female"
+    return ""
+
+
 def _normalize_date_bounds(
     date_from: str | None,
     date_to: str | None,
@@ -212,6 +249,7 @@ class ParquetQueryEngine:
         pq_path: Path,
         roster: dict[str, dict[str, str]],
         catalog_by_key: dict[str, dict[str, Any]] | None = None,
+        surname_genders: dict[str, set[str]] | None = None,
     ) -> None:
         """Read participant metadata columns from a single Parquet file."""
         try:
@@ -232,7 +270,7 @@ class ParquetQueryEngine:
                 return
             table = pq.read_table(pq_path, columns=cols)
             for r in table.to_pylist():
-                gender = str(r.get("gender") or "").strip()
+                gender = _normalize_gender(r.get("gender"))
                 role = str(r.get("role_category") or r.get("role") or "").strip()
                 affiliation = str(r.get("institution") or r.get("affiliation") or "").strip()
                 n_turns = int(r.get("n_turns") or 0)
@@ -242,11 +280,29 @@ class ParquetQueryEngine:
                 name_raw = str(r.get("name_raw") or "").strip()
                 name_norm = str(r.get("name_norm") or "").strip()
 
+                keys: set[str] = set()
+                surname_keys: set[str] = set()
                 for raw_k in (name_norm, name_raw, board_name):
-                    if raw_k:
-                        norm_k = _norm_speaker(raw_k)
-                        if norm_k and norm_k not in roster:
-                            roster[norm_k] = info
+                    if not raw_k:
+                        continue
+                    norm_k = _norm_speaker(raw_k)
+                    if norm_k:
+                        keys.add(norm_k)
+                    surname_k = _speaker_surname_key(raw_k)
+                    if surname_k:
+                        keys.add(surname_k)
+                        surname_keys.add(surname_k)
+
+                for key in keys:
+                    existing = roster.get(key)
+                    if existing is None:
+                        roster[key] = dict(info)
+                    elif not existing.get("gender") and gender:
+                        existing["gender"] = gender
+
+                if surname_genders is not None and gender:
+                    for surname_k in surname_keys:
+                        surname_genders.setdefault(surname_k, set()).add(gender)
 
                 if catalog_by_key is not None:
                     display_name = board_name or name_raw or name_norm
@@ -293,11 +349,12 @@ class ParquetQueryEngine:
     ) -> dict[str, dict[str, str]]:
         """Load lightweight speaker -> {gender, role} map from participants.parquet or partitions."""
         roster: dict[str, dict[str, str]] = {}
+        surname_genders: dict[str, set[str]] = {}
 
         # 1. Flat participants.parquet (produced by fomc-data/scripts/process-participants.py)
         flat_file = self.settings.resolve_participants_file()
         if flat_file.is_file():
-            self._ingest_participant_parquet(flat_file, roster)
+            self._ingest_participant_parquet(flat_file, roster, surname_genders=surname_genders)
 
         # 2. Legacy yearly partitions participants/year=*/part-*.parquet
         part_dir = self.settings.resolve_participants_dir()
@@ -307,7 +364,14 @@ class ParquetQueryEngine:
                 if years and m and int(m.group(1)) not in years:
                     continue
                 for pq_path in sorted(year_dir.glob("part-*.parquet")):
-                    self._ingest_participant_parquet(pq_path, roster)
+                    self._ingest_participant_parquet(
+                        pq_path, roster, surname_genders=surname_genders
+                    )
+
+        # 3. Ambiguous surnames are not attributed to a single gender.
+        for surname_k, genders in surname_genders.items():
+            if len(genders) > 1 and surname_k in roster:
+                roster[surname_k]["gender"] = ""
         return roster
 
     def load_speaker_catalog(self) -> list[dict[str, Any]]:

@@ -29,12 +29,18 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.config import Settings, set_settings
+from app.core.fomc_service import _participant_group_key
 from app.core.matrix_math import (
     partition_and_aggregate_chunks,
     project_matrix_granularity,
     transform_matrix,
 )
-from app.core.query_engine import clear_speaker_catalog_cache
+from app.core.query_engine import (
+    ParquetQueryEngine,
+    _normalize_gender,
+    _speaker_surname_key,
+    clear_speaker_catalog_cache,
+)
 from app.core.taxonomy import MACRO_CATEGORIES, V5_LEAF_CLASSES
 from app.db.repository import reset_repository
 from app.main import create_app
@@ -715,6 +721,94 @@ class TestCompactCommonAppDBIntegration(unittest.TestCase):
             self.assertEqual(r_rel.status_code, 200)
             self.assertTrue(r_rel.json()["available"], f"Relevance should be available for {dt} {mdate}")
             self.assertGreater(r_rel.json()["total_classified"], 0)
+
+
+class TestParticipantGenderResolution(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._tmpdir = tempfile.TemporaryDirectory(prefix="fomc_gender_test_")
+        root = Path(cls._tmpdir.name)
+        rows = [
+            {
+                "participant_id": 1,
+                "board_member_name": "Janet Yellen",
+                "name_raw": "MS. YELLEN",
+                "name_norm": "yellen",
+                "gender": "Female",
+                "role_category": "Chair",
+            },
+            {
+                "participant_id": 2,
+                "board_member_name": "Ben Bernanke",
+                "name_raw": "CHAIRMAN BERNANKE",
+                "name_norm": "bernanke",
+                "gender": "m",
+                "role_category": "Chair",
+            },
+            {
+                "participant_id": 3,
+                "board_member_name": "Henry Wallich",
+                "name_raw": "Mr. Wallich",
+                "name_norm": "wallich",
+                "gender": "M",
+                "role_category": "Governor",
+            },
+            {
+                "participant_id": 4,
+                "board_member_name": "Jane Smith",
+                "name_raw": "Ms. Smith",
+                "name_norm": "smith",
+                "gender": "Female",
+                "role_category": "Economist",
+            },
+            {
+                "participant_id": 5,
+                "board_member_name": "John Smith",
+                "name_raw": "Mr. Smith",
+                "name_norm": "smith",
+                "gender": "Male",
+                "role_category": "Economist",
+            },
+        ]
+        pq.write_table(
+            pa.Table.from_pylist(rows, schema=PARTICIPANTS_SCHEMA),
+            root / "participants.parquet",
+        )
+        cls.roster = ParquetQueryEngine(Settings(fomc_data_dir=root)).load_participants_roster()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmpdir.cleanup()
+
+    def _gender(self, speaker: str) -> str:
+        return _participant_group_key({"speaker": speaker}, "gender", self.roster)
+
+    def test_surname_key_and_gender_normalization(self):
+        self.assertEqual(_speaker_surname_key("Janet L. Yellen"), "yellen")
+        self.assertEqual(_speaker_surname_key("chair_bernanke"), "bernanke")
+        self.assertEqual(_speaker_surname_key("CHAIRMAN BERNANKE"), "bernanke")
+        self.assertEqual(
+            _speaker_surname_key("Eric S. Rosengren, President & Chief Executive Officer"),
+            "rosengren",
+        )
+        self.assertEqual(_normalize_gender("m"), "Male")
+        self.assertEqual(_normalize_gender(" male "), "Male")
+        self.assertEqual(_normalize_gender("F"), "Female")
+        self.assertEqual(_normalize_gender(""), "")
+
+    def test_gender_resolution_by_full_name_surname_and_title(self):
+        self.assertEqual(self._gender("Janet L. Yellen"), "Female")
+        self.assertEqual(self._gender("MS. YELLEN"), "Female")
+        self.assertEqual(self._gender("chair_bernanke"), "Male")
+        self.assertEqual(self._gender("CHAIRMAN BERNANKE"), "Male")
+        self.assertEqual(self._gender("Mr. Wallich"), "Male")
+
+    def test_ambiguous_surname_is_not_guessed(self):
+        self.assertEqual(self._gender("Smith"), "Unknown Gender")
+
+    def test_role_lookup_falls_back_to_surname(self):
+        role = _participant_group_key({"speaker": "Mr. Wallich"}, "speaker_role", self.roster)
+        self.assertEqual(role, "Governor")
 
 
 if __name__ == "__main__":
