@@ -611,6 +611,21 @@ class ParquetQueryEngine:
                 return [], 0
 
         if HAS_DUCKDB and gender_speakers is None:
+            if query_text and not use_regex and self._index_available():
+                indexed = self._search_documents_indexed(
+                    files=files,
+                    date_from=eff_from,
+                    date_to=eff_to,
+                    meeting_date=eff_meeting,
+                    speaker=speaker,
+                    query_text=query_text,
+                    use_regex=use_regex,
+                    limit=limit,
+                    offset=offset,
+                    doc_types=eff_types,
+                )
+                if indexed is not None:
+                    return indexed
             return self._search_documents_duckdb(
                 files=files,
                 date_from=eff_from,
@@ -726,6 +741,165 @@ class ParquetQueryEngine:
                 for r in rows
             ]
             return results, total
+        finally:
+            conn.close()
+
+    def _index_available(self) -> bool:
+        index_dir = self.settings.resolve_text_index_dir()
+        if not index_dir.is_dir():
+            return False
+        return any(index_dir.glob("year=*/token_postings.parquet")) or (
+            index_dir / "token_postings.parquet"
+        ).is_file()
+
+    def _search_documents_indexed(
+        self,
+        *,
+        files: list[Path],
+        date_from: str | None,
+        date_to: str | None,
+        meeting_date: str | None,
+        speaker: str | None,
+        query_text: str | None,
+        use_regex: bool,
+        limit: int,
+        offset: int,
+        doc_types: list[str],
+    ) -> tuple[list[dict[str, Any]], int] | None:
+        if use_regex or not query_text:
+            return None
+        token = query_text.strip().lower()
+        if len(token) < 3 or any(ch.isspace() for ch in token):
+            return None
+
+        index_dir = self.settings.resolve_text_index_dir()
+        if not index_dir.is_dir():
+            return None
+
+        if meeting_date and len(meeting_date) >= 4:
+            years = [int(meeting_date[:4])]
+        else:
+            year_from = int(date_from[:4]) if date_from and len(date_from) >= 4 else CORPUS_MIN_YEAR
+            year_to = int(date_to[:4]) if date_to and len(date_to) >= 4 else CORPUS_MAX_YEAR
+            years = list(range(year_from, year_to + 1))
+
+        shards = [index_dir / f"year={year}" / "token_postings.parquet" for year in years]
+        shards = [path for path in shards if path.is_file()]
+        if not shards and (index_dir / "token_postings.parquet").is_file():
+            shards = [index_dir / "token_postings.parquet"]
+        if not shards:
+            return None
+
+        index_files = [str(path) for path in shards]
+        file_list = [str(path) for path in files]
+
+        matched_clauses = ["token = ?"]
+        matched_params: list[Any] = [token]
+        if doc_types:
+            placeholders = ", ".join("?" for _ in doc_types)
+            matched_clauses.append(f"doc_type IN ({placeholders})")
+            matched_params.extend(doc_types)
+        if meeting_date:
+            matched_clauses.append("meeting_date = ?")
+            matched_params.append(meeting_date)
+        else:
+            if date_from:
+                matched_clauses.append("meeting_date >= ?")
+                matched_params.append(date_from)
+            if date_to:
+                matched_clauses.append("meeting_date <= ?")
+                matched_params.append(date_to)
+        matched_sql = " AND ".join(matched_clauses)
+
+        outer_clauses = [
+            "d.meeting_date IS NOT NULL AND d.meeting_date != ''",
+            f"d.meeting_date <= '{CORPUS_MAX_DATE}'",
+        ]
+        outer_params: list[Any] = []
+        if meeting_date:
+            outer_clauses.append("d.meeting_date = ?")
+            outer_params.append(meeting_date)
+        else:
+            if date_from:
+                outer_clauses.append("d.meeting_date >= ?")
+                outer_params.append(date_from)
+            if date_to:
+                outer_clauses.append("d.meeting_date <= ?")
+                outer_params.append(date_to)
+        if speaker:
+            outer_clauses.append("d.speaker ILIKE ?")
+            outer_params.append(f"%{speaker}%")
+        outer_sql = " AND ".join(outer_clauses)
+
+        join_sql = (
+            "JOIN matched m ON d.doc_type = m.doc_type "
+            "AND d.meeting_date = m.meeting_date AND d.sequence_num = m.seq"
+        )
+        matched_cte = f"""
+            WITH matched AS (
+                SELECT DISTINCT doc_type, meeting_date, seq
+                FROM read_parquet(?, union_by_name=true)
+                WHERE {matched_sql}
+            )
+        """
+
+        conn = self._connect_duckdb()
+        try:
+            count_sql = matched_cte + f"""
+                SELECT COUNT(*) FROM (
+                    SELECT d.meeting_date, d.doc_type
+                    FROM read_parquet(?, union_by_name=true) d
+                    {join_sql}
+                    WHERE {outer_sql}
+                    GROUP BY d.meeting_date, d.doc_type
+                ) sub
+            """
+            total = int(
+                conn.execute(
+                    count_sql, [index_files, *matched_params, file_list, *outer_params]
+                ).fetchone()[0]
+            )
+            if total == 0:
+                return [], 0
+
+            query_sql = matched_cte + f"""
+                SELECT
+                    d.meeting_date,
+                    d.doc_type,
+                    MIN(d.year) AS year,
+                    COUNT(*) AS matched_chunks,
+                    COUNT(DISTINCT CASE WHEN d.speaker IS NOT NULL AND d.speaker != '' THEN d.speaker END) AS speaker_count,
+                    ANY_VALUE(d.source_file) AS source_file,
+                    FIRST(LEFT(COALESCE(d.text_content, ''), 260) ORDER BY d.sequence_num) AS snippet,
+                    LIST(DISTINCT d.speaker) FILTER (WHERE d.speaker IS NOT NULL AND d.speaker != '')[:5] AS top_speakers
+                FROM read_parquet(?, union_by_name=true) d
+                {join_sql}
+                WHERE {outer_sql}
+                GROUP BY d.meeting_date, d.doc_type
+                ORDER BY d.meeting_date DESC, d.doc_type ASC
+                LIMIT ? OFFSET ?
+            """
+            rows = conn.execute(
+                query_sql,
+                [index_files, *matched_params, file_list, *outer_params, limit, offset],
+            ).fetchall()
+            results = [
+                {
+                    "document_id": f"{r[1]}::{r[0]}",
+                    "meeting_date": str(r[0]),
+                    "doc_type": str(r[1]),
+                    "year": int(r[2]) if r[2] is not None else int(str(r[0])[:4]),
+                    "chunk_count": int(r[3]),
+                    "speaker_count": int(r[4]),
+                    "source_file": str(r[5] or ""),
+                    "snippet": str(r[6] or "").strip(),
+                    "top_speakers": [str(s) for s in (r[7] or [])],
+                }
+                for r in rows
+            ]
+            return results, total
+        except Exception:
+            return None
         finally:
             conn.close()
 

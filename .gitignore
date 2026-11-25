@@ -21,5 +21,4 @@ frontend/.vite/
 # is intentionally tracked in Git so the standalone fomc-app repository is self-contained
 # and versioned (< 200 MB total, max single file < 9 MB).
 stress-tests
-scripts
 .codegraph

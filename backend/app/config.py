@@ -232,6 +232,22 @@ class Settings:
                 return path
         return candidates[0]
 
+    def resolve_text_index_dir(self) -> Path:
+        candidates = [
+            self.fomc_data_dir / "text_index",
+            self.fomc_data_dir / "data-processed" / "text_index",
+            self.fomc_data_dir / "data" / "output" / "data-processed" / "text_index",
+            self.fomc_data_dir / "output" / "data-processed" / "text_index",
+            _MONOREPO_ROOT / "fomc-data" / "text_index",
+        ]
+        for path in candidates:
+            if path.is_dir() and (
+                any(path.glob("year=*/token_postings.parquet"))
+                or (path / "token_postings.parquet").is_file()
+            ):
+                return path
+        return candidates[0]
+
     def resolve_agenda_items_dir(self) -> Path:
         candidates = [
             self.fomc_data_dir / "agenda_items",
