@@ -387,6 +387,22 @@ class Settings:
             LOGGER.warning("matrix cache dir not writable %s: %s", target, exc)
         return target
 
+    def resolve_search_cache_dir(self) -> Path:
+        candidates = [
+            Path("/tmp/search_cache"),
+            self.fomc_data_dir / "search_cache",
+            _MONOREPO_ROOT / "fomc-data" / "search_cache",
+        ]
+        target = next(
+            (path for path in candidates if path.parent.is_dir() and os.access(path.parent, os.W_OK)),
+            Path("/tmp/search_cache"),
+        )
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            LOGGER.warning("search cache dir not writable %s: %s", target, exc)
+        return target
+
     def resolve_labels_dir(self) -> Path:
         candidates: list[Path] = []
         if self.labels_dir is not None:

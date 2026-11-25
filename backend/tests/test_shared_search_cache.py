@@ -12,11 +12,17 @@ if str(BACKEND_ROOT) not in sys.path:
 from app.core import cache as cache_module
 from app.core.cache import SharedSearchCache
 from app.db.repository import AppRepository
+from app import config as config_module
 
 
 def _make_cache(tmp_path, monkeypatch) -> tuple[SharedSearchCache, AppRepository]:
     repo = AppRepository(SimpleNamespace(database_url=f"sqlite:///{tmp_path / 'cache.db'}"))
     monkeypatch.setattr(cache_module, "get_repository", lambda: repo)
+    monkeypatch.setattr(
+        config_module,
+        "get_settings",
+        lambda: SimpleNamespace(resolve_search_cache_dir=lambda: tmp_path / "disk"),
+    )
     return SharedSearchCache("search", max_entries=8, ttl_s=900, max_bytes=1024 * 1024), repo
 
 
@@ -81,6 +87,7 @@ def test_expired_l2_entry_is_purged(tmp_path, monkeypatch):
     cache.set(key, (["a"], 1))
     repo.set_cached_search(cache._l2_key(key), '[["a"], 1]', 10, ttl_s=0.05)
     cache._l1.clear()
+    cache._clear_disk()
     time.sleep(0.06)
 
     assert cache.get(key) == (False, None)

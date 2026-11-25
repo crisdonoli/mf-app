@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import threading
 import time
 from collections import OrderedDict
+from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 T = TypeVar("T")
@@ -128,9 +131,9 @@ class TTLCache:
 
 
 class SharedSearchCache:
-    """Two-tier cache: per-worker in-memory L1 plus a shared SQL-backed L2.
+    """Three-tier cache: per-worker memory L1, shared SQL L2, on-disk JSON L3.
 
-    L2 is best-effort. Any backend failure degrades to L1-only behaviour.
+    L2 and L3 are best-effort. Any backend failure degrades to the remaining tiers.
     """
 
     def __init__(
@@ -143,6 +146,7 @@ class SharedSearchCache:
     ) -> None:
         self.name = name
         self.ttl_s = ttl_s
+        self._disk_dir: Path | None = None
         self._l1 = TTLCache(
             name,
             max_entries=max_entries,
@@ -154,20 +158,104 @@ class SharedSearchCache:
     def _l2_key(self, key: Any) -> str:
         return f"{self.name}:{json.dumps(key, default=str, separators=(',', ':'))}"
 
+    def _resolve_disk_dir(self) -> Path | None:
+        if self._disk_dir is None:
+            try:
+                from ..config import get_settings
+
+                self._disk_dir = get_settings().resolve_search_cache_dir()
+            except Exception as exc:
+                LOGGER.warning("Shared search cache L3 dir resolution failed: %s", exc)
+                return None
+        return self._disk_dir
+
+    def _disk_path(self, key: Any) -> Path | None:
+        directory = self._resolve_disk_dir()
+        if directory is None:
+            return None
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            digest = hashlib.sha256(self._l2_key(key).encode()).hexdigest()
+            return directory / f"{digest}.json"
+        except Exception as exc:
+            LOGGER.warning("Shared search cache L3 path failed: %s", exc)
+            return None
+
+    def _read_disk(self, key: Any) -> tuple[bool, Any]:
+        path = self._disk_path(key)
+        if path is None or not path.is_file():
+            return False, None
+        try:
+            payload = json.loads(path.read_text())
+            expires_at = payload.get("expires_at")
+            if expires_at is not None and float(expires_at) <= time.time():
+                path.unlink(missing_ok=True)
+                return False, None
+            value = payload["value"]
+        except Exception as exc:
+            LOGGER.warning("Shared search cache L3 read failed: %s", exc)
+            return False, None
+        self._l1.set(key, value)
+        try:
+            raw = json.dumps(value, default=str)
+            get_repository().set_cached_search(self._l2_key(key), raw, len(raw.encode()), self.ttl_s)
+        except Exception as exc:
+            LOGGER.warning("Shared search cache L2 write failed: %s", exc)
+        return True, value
+
+    def _write_disk(self, key: Any, value: Any) -> None:
+        path = self._disk_path(key)
+        if path is None:
+            return
+        try:
+            payload = {
+                "value": value,
+                "expires_at": time.time() + self.ttl_s if self.ttl_s > 0 else None,
+            }
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(payload, default=str))
+            os.replace(tmp, path)
+        except Exception as exc:
+            LOGGER.warning("Shared search cache L3 write failed: %s", exc)
+
+    def _clear_disk(self) -> None:
+        directory = self._resolve_disk_dir()
+        if directory is None:
+            return
+        try:
+            for path in directory.glob("*.json"):
+                path.unlink(missing_ok=True)
+        except Exception as exc:
+            LOGGER.warning("Shared search cache L3 purge failed: %s", exc)
+
+    def _disk_stats(self) -> dict[str, Any]:
+        directory = self._resolve_disk_dir()
+        entries = 0
+        total_bytes = 0
+        if directory is not None:
+            try:
+                for path in directory.glob("*.json"):
+                    entries += 1
+                    total_bytes += path.stat().st_size
+            except Exception as exc:
+                LOGGER.warning("Shared search cache L3 stats failed: %s", exc)
+        return {"entries": entries, "bytes": total_bytes}
+
     def get(self, key: Any) -> tuple[bool, Any]:
         hit, value = self._l1.get(key)
         if hit:
             return True, value
+        raw = None
         try:
             raw = get_repository().get_cached_search(self._l2_key(key))
         except Exception as exc:
             LOGGER.warning("Shared search cache L2 read failed: %s", exc)
-            return False, None
-        if raw is None:
-            return False, None
-        value = json.loads(raw)
-        self._l1.set(key, value)
-        return True, value
+        if raw is not None:
+            value = json.loads(raw)
+            self._l1.set(key, value)
+            self._write_disk(key, value)
+            return True, value
+        return self._read_disk(key)
 
     def set(self, key: Any, value: Any) -> None:
         self._l1.set(key, value)
@@ -176,6 +264,7 @@ class SharedSearchCache:
             get_repository().set_cached_search(self._l2_key(key), raw, len(raw.encode()), self.ttl_s)
         except Exception as exc:
             LOGGER.warning("Shared search cache L2 write failed: %s", exc)
+        self._write_disk(key, value)
 
     def get_or_compute(self, key: Any, compute: Callable[[], T]) -> T:
         hit, value = self.get(key)
@@ -191,6 +280,7 @@ class SharedSearchCache:
             get_repository().purge_search_cache(prefix)
         except Exception as exc:
             LOGGER.warning("Shared search cache L2 purge failed: %s", exc)
+        self._clear_disk()
 
     def stats(self) -> dict[str, Any]:
         merged = self._l1.stats()
@@ -199,6 +289,7 @@ class SharedSearchCache:
         except Exception as exc:
             LOGGER.warning("Shared search cache L2 stats failed: %s", exc)
             merged["l2"] = {"entries": 0, "total_bytes": 0, "oldest": None, "newest": None, "error": str(exc)}
+        merged["disk"] = self._disk_stats()
         return merged
 
 
