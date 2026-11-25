@@ -20,6 +20,7 @@ services:
       context: ./backend
       target: prod
     container_name: miningfomc-backend
+    mem_limit: ${BACKEND_MEM_LIMIT:-1150m}
     restart: unless-stopped
     env_file:
       - .env
@@ -32,8 +33,16 @@ services:
       CORRECTIONS_DIR: /fomc-corrections
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-miningfomc}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-miningfomc}
       CORS_ORIGINS: https://miningfomc.com,https://www.miningfomc.com
-      DUCKDB_MEMORY_LIMIT: ${DUCKDB_MEMORY_LIMIT:-1GB}
-      DUCKDB_THREADS: ${DUCKDB_THREADS:-4}
+      # Cambios aquí requieren rebuild del backend (Dockerfile lee GUNICORN_WORKERS al arrancar).
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-2}
+      DUCKDB_MEMORY_LIMIT: ${DUCKDB_MEMORY_LIMIT:-256MB}
+      DUCKDB_THREADS: ${DUCKDB_THREADS:-1}
+      HEAVY_QUERY_MAX_CONCURRENCY: ${HEAVY_QUERY_MAX_CONCURRENCY:-1}
+      CORPUS_QUERY_MAX_CONCURRENCY: ${CORPUS_QUERY_MAX_CONCURRENCY:-2}
+      HEAVY_QUERY_MAX_QUEUE: ${HEAVY_QUERY_MAX_QUEUE:-4}
+      HEAVY_QUERY_WAIT_TIMEOUT_S: ${HEAVY_QUERY_WAIT_TIMEOUT_S:-20}
+      HEAVY_QUERY_GRACE_S: ${HEAVY_QUERY_GRACE_S:-1.2}
+      CORPUS_QUERY_GRACE_S: ${CORPUS_QUERY_GRACE_S:-0.6}
     volumes:
       - ${HOST_FOMC_DATA_DIR:-./fomc-data}:/fomc-data:ro
       - ${HOST_SIMILARITIES_DIR:-./fomc-data/similarities/model=bge-m3/pooling=chunk}:/fomc-similarities:ro
