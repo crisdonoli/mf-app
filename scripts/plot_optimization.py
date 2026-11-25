@@ -11,7 +11,7 @@ GROUPS = {
         ("Sin cache (warm)", "warm.csv"),
         ("Sin cache (base1)", "base1.csv"),
         ("Con indice invertido (frio)", "idx-cold.csv"),
-        ("Con cache LRU (caliente)", "idx-hot.csv"),
+        ("Con cache compartida L1+L2+L3 (caliente)", "idx-hot.csv"),
     ],
     "Comparador (compare-tree, 60 docs)": [
         ("Antes (sin cache disco)", "compare-tree-2.csv"),
