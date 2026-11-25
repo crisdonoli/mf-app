@@ -31,7 +31,7 @@ from .matrix_math import (
     project_matrix_granularity,
     transform_matrix,
 )
-from .query_engine import ParquetQueryEngine, _norm_speaker, _speaker_surname_key
+from .query_engine import ParquetQueryEngine, _norm_speaker, _speaker_surname_key, _speaker_surname_key
 from .taxonomy import (
     LEAF_TO_MACRO,
     MACRO_CATEGORIES,
@@ -77,7 +77,7 @@ def list_available_doc_types(settings: Settings | None = None) -> list[dict[str,
 def search_speakers(
     query: str = "",
     *,
-    limit: int = 15,
+    limit: int = 500,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     """Return instant type-ahead FOMC participant suggestions."""

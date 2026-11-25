@@ -35,14 +35,14 @@ export const SpeakerAutocomplete: React.FC<SpeakerAutocompleteProps> = ({
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, []);
 
-  // Debounced fetch when open or value changes
+  // Debounced fetch when open or value changes (returns full catalog up to 500 participants)
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     const timer = window.setTimeout(async () => {
       setLoading(true);
       try {
-        const res = await api.autocompleteSpeakers(value.trim(), 15);
+        const res = await api.autocompleteSpeakers(value.trim(), 500);
         if (!cancelled) {
           setSuggestions(res.items || []);
           setActiveIndex(-1);
@@ -115,17 +115,22 @@ export const SpeakerAutocomplete: React.FC<SpeakerAutocompleteProps> = ({
       </div>
 
       {open && (
-        <div className="absolute left-0 right-0 top-full mt-1 z-40 bg-surface border border-border rounded-sm shadow-lg max-h-60 overflow-y-auto">
+        <div className="absolute left-0 right-0 top-full mt-1 z-40 bg-surface border border-border rounded-sm shadow-lg max-h-72 overflow-y-auto">
           {loading && suggestions.length === 0 ? (
             <div className="px-3 py-2 text-[11px] font-mono text-muted">
-              Loading participants...
+              Loading FOMC participants from server...
             </div>
           ) : suggestions.length === 0 ? (
             <div className="px-3 py-2 text-[11px] font-mono text-zinc-400">
               No matching FOMC participants
             </div>
           ) : (
-            suggestions.map((item, idx) => (
+            <>
+              <div className="sticky top-0 z-10 px-3 py-1 bg-zinc-50 border-b border-border text-[10px] font-mono uppercase text-muted flex items-center justify-between">
+                <span>FOMC Participants ({suggestions.length})</span>
+                {loading && <span>Updating...</span>}
+              </div>
+              {suggestions.map((item, idx) => (
               <button
                 key={`${item.name}-${idx}`}
                 type="button"
@@ -154,7 +159,8 @@ export const SpeakerAutocomplete: React.FC<SpeakerAutocompleteProps> = ({
                   </span>
                 )}
               </button>
-            ))
+              ))}
+            </>
           )}
         </div>
       )}

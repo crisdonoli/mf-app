@@ -360,9 +360,11 @@ def compare_ungrouped_chronological(
 
     canonical_categories: list[dict[str, str]] = []
     series_out: list[dict[str, Any]] = []
-    time_ticks: list[dict[str, Any]] = []
-    tick_vectors: list[np.ndarray] = []
-    tick_meta: list[dict[str, Any]] = []
+    period_max_slices: dict[str, int] = {}
+    period_meta_map: dict[str, dict[str, Any]] = {}
+    # doc_type -> (meeting_date, slice_num) -> (vector, meta_dict)
+    by_doctype_ticks: dict[str, dict[tuple[str, int], tuple[np.ndarray, dict[str, Any]]]] = defaultdict(dict)
+    seen_doc_types_order: list[str] = []
 
     for doc in ordered_docs:
         dt = doc["doc_type"]
@@ -387,6 +389,9 @@ def compare_ungrouped_chronological(
             )
             continue
 
+        if dt not in seen_doc_types_order:
+            seen_doc_types_order.append(dt)
+
         proj_mat, proj_labels = project_matrix_granularity(
             raw_mat, raw_labels, granularity=granularity, macro_category=macro_category
         )
@@ -398,6 +403,17 @@ def compare_ungrouped_chronological(
 
         yr = int(md[:4]) if len(md) >= 4 and md[:4].isdigit() else 1976
         mo_str = md[:7] if len(md) >= 7 else f"{yr:04d}-01"
+
+        period_max_slices[md] = max(period_max_slices.get(md, 0), part_res.n_actual)
+        if md not in period_meta_map:
+            period_meta_map[md] = {
+                "year": yr,
+                "month": mo_str,
+                "meeting_date": md,
+                "doc_types": [],
+            }
+        if dt not in period_meta_map[md]["doc_types"]:
+            period_meta_map[md]["doc_types"].append(dt)
 
         partitions_payload = []
         for idx, (start, end) in enumerate(part_res.partition_ranges):
@@ -416,28 +432,8 @@ def compare_ungrouped_chronological(
                     "values": vals_list,
                 }
             )
-
-            t_idx = len(time_ticks)
-            time_ticks.append(
-                {
-                    "index": t_idx,
-                    "year": yr,
-                    "month": mo_str,
-                    "meeting_date": md,
-                    "period_key": md,
-                    "period_label": md,
-                    "slice_num": s_num,
-                    "slice_index": s_num,
-                    "total_slices": part_res.n_actual,
-                    "full_label": (
-                        f"{md} ({format_doc_type(dt)})"
-                        if part_res.n_actual == 1
-                        else f"{md} · Slice {s_num}/{part_res.n_actual}"
-                    ),
-                }
-            )
-            tick_vectors.append(transformed[idx])
-            tick_meta.append(
+            by_doctype_ticks[dt][(md, s_num)] = (
+                transformed[idx],
                 {
                     "documents": [{"doc_type": dt, "meeting_date": md}],
                     "path_filters": [],
@@ -446,7 +442,7 @@ def compare_ungrouped_chronological(
                     "n_partitions": part_res.n_actual,
                     "doc_count": 1,
                     "chunk_count": int(end - start),
-                }
+                },
             )
 
         series_out.append(
@@ -463,22 +459,60 @@ def compare_ungrouped_chronological(
             }
         )
 
+    time_ticks: list[dict[str, Any]] = []
+    tick_lookup: dict[tuple[str, int], int] = {}
+    for md in sorted(period_meta_map.keys()):
+        pm = period_meta_map[md]
+        max_s = period_max_slices.get(md, 1)
+        dts_for_md = pm["doc_types"]
+        dt_suffix = f" ({format_doc_type(dts_for_md[0])})" if len(dts_for_md) == 1 else f" ({len(dts_for_md)} types)"
+        for s_num in range(1, max_s + 1):
+            t_idx = len(time_ticks)
+            tick_lookup[(md, s_num)] = t_idx
+            time_ticks.append(
+                {
+                    "index": t_idx,
+                    "year": pm["year"],
+                    "month": pm["month"],
+                    "meeting_date": md,
+                    "period_key": md,
+                    "period_label": md,
+                    "slice_num": s_num,
+                    "slice_index": s_num,
+                    "total_slices": max_s,
+                    "full_label": (
+                        f"{md}{dt_suffix}"
+                        if max_s == 1
+                        else f"{md} · Slice {s_num}/{max_s}"
+                    ),
+                }
+            )
+
     n_cats = len(canonical_categories)
+    n_ticks = len(time_ticks)
     ordered_series: list[dict[str, Any]] = []
-    if tick_vectors and n_cats > 0:
-        stacked = np.vstack(tick_vectors)  # shape (T, C)
-        values_by_topic = [
-            [float(stacked[t, c]) for t in range(stacked.shape[0])]
-            for c in range(n_cats)
-        ]
-        ordered_series.append(
-            {
-                "cohort_id": "all_selected",
-                "label": "All Selected Meetings",
-                "values_by_topic": values_by_topic,
-                "tick_meta": tick_meta,
-            }
-        )
+    if n_ticks > 0 and n_cats > 0:
+        for dt in seen_doc_types_order:
+            dt_map = by_doctype_ticks.get(dt, {})
+            if not dt_map:
+                continue
+            values_by_topic: list[list[float | None]] = [[None] * n_ticks for _ in range(n_cats)]
+            tick_meta_list: list[dict[str, Any] | None] = [None] * n_ticks
+            for (md, s_num), (vec, meta_obj) in dt_map.items():
+                t_idx = tick_lookup.get((md, s_num))
+                if t_idx is None:
+                    continue
+                for c in range(min(n_cats, vec.shape[0])):
+                    values_by_topic[c][t_idx] = float(vec[c])
+                tick_meta_list[t_idx] = meta_obj
+            ordered_series.append(
+                {
+                    "cohort_id": f"doctype::{dt}",
+                    "label": format_doc_type(dt),
+                    "values_by_topic": values_by_topic,
+                    "tick_meta": tick_meta_list,
+                }
+            )
 
     return {
         "n_partitions_requested": n_partitions,
@@ -689,8 +723,11 @@ def compare_with_grouping_tree(
 
         for sub_pkey, sub_plabel, sub_pyr, sub_pmo, sub_md, sub_docs in per_doc_entries:
             slice_buckets: dict[int, list[np.ndarray]] = defaultdict(list)
-            slice_chunk_counts: dict[int, int] = defaultdict(int)
-            slice_doc_counts: dict[int, int] = defaultdict(int)
+            by_dt_slice_buckets: dict[str, dict[int, list[np.ndarray]]] = defaultdict(lambda: defaultdict(list))
+            by_dt_slice_chunk_counts: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+            by_dt_slice_doc_counts: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+            by_dt_docs: dict[str, list[dict[str, str]]] = defaultdict(list)
+            by_dt_chunks: dict[str, int] = defaultdict(int)
             sub_chunks = 0
 
             for doc in sub_docs:
@@ -720,31 +757,20 @@ def compare_with_grouping_tree(
 
                 part_res = partition_and_aggregate_chunks(doc_mat, n_partitions=n_partitions)
                 sub_chunks += part_res.total_chunks
+                by_dt_chunks[dt] += part_res.total_chunks
+                by_dt_docs[dt].append(doc)
                 for s_idx in range(part_res.n_actual):
                     start_c, end_c = part_res.partition_ranges[s_idx]
                     slice_buckets[s_idx].append(part_res.matrix[s_idx])
-                    slice_chunk_counts[s_idx] += int(end_c - start_c)
-                    slice_doc_counts[s_idx] += 1
+                    by_dt_slice_buckets[dt][s_idx].append(part_res.matrix[s_idx])
+                    by_dt_slice_chunk_counts[dt][s_idx] += int(end_c - start_c)
+                    by_dt_slice_doc_counts[dt][s_idx] += 1
                     leaf_all_slice_buckets[s_idx].append(part_res.matrix[s_idx])
 
             if not slice_buckets:
                 continue
 
             leaf_total_chunks += sub_chunks
-            sorted_s_idxs = sorted(slice_buckets.keys())
-            agg_rows = []
-            for s_idx in sorted_s_idxs:
-                stacked = np.vstack(slice_buckets[s_idx])
-                vec = (
-                    np.nanmedian(stacked, axis=0).astype(np.float32)
-                    if agg_method == "median"
-                    else np.nanmean(stacked, axis=0).astype(np.float32)
-                )
-                agg_rows.append(vec)
-            transformed = transform_matrix(
-                np.vstack(agg_rows), metric=metric, normalization=norm_clean
-            )
-
             period_meta[sub_pkey] = {
                 "period_key": sub_pkey,
                 "period_label": sub_plabel,
@@ -752,23 +778,47 @@ def compare_with_grouping_tree(
                 "month": sub_pmo,
                 "meeting_date": sub_md,
             }
-            c_entry = ts_cohorts.setdefault(
-                cohort_key,
-                {
-                    "cohort_id": cohort_key,
-                    "label": cohort_key,
-                    "cohort_filters": cohort_filters,
-                    "periods": {},
-                },
-            )
-            c_entry["periods"][sub_pkey] = {
-                "matrix": transformed,
-                "documents": sub_docs,
-                "path_filters": p_filters,
-                "total_chunks": sub_chunks,
-                "slice_chunk_counts": dict(slice_chunk_counts),
-                "slice_doc_counts": dict(slice_doc_counts),
-            }
+
+            # Separate time-series cohorts by document type (and participant filter if active)
+            has_multiple_doc_types = len({d["doc_type"] for d in unique_docs}) > 1
+            for dt, dt_s_buckets in by_dt_slice_buckets.items():
+                sorted_s_idxs = sorted(dt_s_buckets.keys())
+                agg_rows = []
+                for s_idx in sorted_s_idxs:
+                    stacked = np.vstack(dt_s_buckets[s_idx])
+                    vec = (
+                        np.nanmedian(stacked, axis=0).astype(np.float32)
+                        if agg_method == "median"
+                        else np.nanmean(stacked, axis=0).astype(np.float32)
+                    )
+                    agg_rows.append(vec)
+                transformed_dt = transform_matrix(
+                    np.vstack(agg_rows), metric=metric, normalization=norm_clean
+                )
+                dt_label = format_doc_type(dt)
+                if part_filters:
+                    dt_cohort_key = (
+                        f"{cohort_key} · {dt_label}" if has_multiple_doc_types else cohort_key
+                    )
+                else:
+                    dt_cohort_key = dt_label
+                c_entry = ts_cohorts.setdefault(
+                    dt_cohort_key,
+                    {
+                        "cohort_id": dt_cohort_key,
+                        "label": dt_cohort_key,
+                        "cohort_filters": cohort_filters,
+                        "periods": {},
+                    },
+                )
+                c_entry["periods"][sub_pkey] = {
+                    "matrix": transformed_dt,
+                    "documents": by_dt_docs[dt],
+                    "path_filters": p_filters,
+                    "total_chunks": by_dt_chunks[dt],
+                    "slice_chunk_counts": dict(by_dt_slice_chunk_counts[dt]),
+                    "slice_doc_counts": dict(by_dt_slice_doc_counts[dt]),
+                }
 
         if not leaf_all_slice_buckets:
             continue

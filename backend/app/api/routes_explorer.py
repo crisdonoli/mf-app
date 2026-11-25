@@ -98,7 +98,7 @@ def doc_types(_user: dict = Depends(get_current_user)):
 @router.get("/speakers/autocomplete")
 def speakers_autocomplete(
     q: str = Query(default="", max_length=120),
-    limit: int = Query(default=15, ge=1, le=50),
+    limit: int = Query(default=500, ge=1, le=2000),
     _user: dict = Depends(get_current_user),
 ):
     """Fast type-ahead speaker suggestions backed by participants.parquet & participants_report.json."""
@@ -188,7 +188,7 @@ def document_chunks(
     meeting_date: str,
     speaker: Optional[str] = Query(default=None),
     chunk_ids: Optional[str] = Query(default=None),
-    limit: int = Query(default=100, ge=1, le=1000),
+    limit: int = Query(default=100, ge=1, le=50000),
     offset: int = Query(default=0, ge=0),
     _user: dict = Depends(get_current_user),
     _gate: None = Depends(corpus_query_slot),

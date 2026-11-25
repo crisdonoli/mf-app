@@ -39,6 +39,37 @@ except ImportError:  # pragma: no cover
 _YEAR_RE = re.compile(r"year=(\d{4})")
 _SUBCHUNK_RE = re.compile(r"_s\d+$")
 
+# Canonical 7 active document types enabled in the application
+ALLOWED_DOC_TYPES: tuple[str, ...] = (
+    "transcripts",
+    "statements",
+    "minutes",
+    "minutes_of_actions",
+    "speeches",
+    "press_conferences",
+    "agenda_items",
+)
+ALLOWED_DOC_TYPES_SET: frozenset[str] = frozenset(ALLOWED_DOC_TYPES)
+
+_DOC_TYPE_ALIASES: dict[str, str] = {
+    "policy_statements": "statements",
+    "policy_statement": "statements",
+    "statement": "statements",
+    "transcript": "transcripts",
+    "minute": "minutes",
+    "speech": "speeches",
+    "press_conference": "press_conferences",
+    "meeting_agenda": "agenda_items",
+    "meeting_agendas": "agenda_items",
+    "agendas": "agenda_items",
+    "agenda": "agenda_items",
+}
+
+
+def normalize_doc_type_name(dt: str) -> str:
+    clean = (dt or "").strip().lower()
+    return _DOC_TYPE_ALIASES.get(clean, clean)
+
 LOGGER = logging.getLogger(__name__)
 
 # Bounded module-level caches keyed by source paths. Hard caps keep the 1.86 GiB host safe.
@@ -187,12 +218,14 @@ class ParquetQueryEngine:
         if meta_dir.is_dir():
             for entry in meta_dir.glob("doc_type=*"):
                 if entry.is_dir():
-                    found.add(entry.name.split("=", 1)[1])
+                    dt = entry.name.split("=", 1)[1]
+                    if dt in ALLOWED_DOC_TYPES_SET:
+                        found.add(dt)
         if self.settings.resolve_agenda_items_dir().is_dir():
             found.add("agenda_items")
         if self.settings.resolve_speeches_parquet().is_file():
             found.add("speeches")
-        return sorted(found)
+        return [dt for dt in ALLOWED_DOC_TYPES if dt in found]
 
     def _collect_meta_files(
         self,
@@ -218,14 +251,26 @@ class ParquetQueryEngine:
 
         eff_types: list[str] = []
         if doc_types:
-            eff_types = [d.strip() for d in doc_types if d and d.strip()]
+            eff_types = [
+                normalize_doc_type_name(d)
+                for d in doc_types
+                if d and d.strip() and normalize_doc_type_name(d) in ALLOWED_DOC_TYPES_SET
+            ]
         elif doc_type:
-            eff_types = [d.strip() for d in doc_type.split(",") if d.strip()]
+            eff_types = [
+                normalize_doc_type_name(d)
+                for d in doc_type.split(",")
+                if d.strip() and normalize_doc_type_name(d) in ALLOWED_DOC_TYPES_SET
+            ]
 
         dt_dirs = (
             [meta_dir / f"doc_type={dt}" for dt in eff_types]
             if eff_types
-            else sorted(p for p in meta_dir.glob("doc_type=*") if p.is_dir())
+            else [
+                meta_dir / f"doc_type={dt}"
+                for dt in ALLOWED_DOC_TYPES
+                if (meta_dir / f"doc_type={dt}").is_dir()
+            ]
         )
 
         files: list[Path] = []
@@ -244,12 +289,27 @@ class ParquetQueryEngine:
         return files
 
     # ------------------------------------------------------------------ Participants Roster & Autocomplete
+    @staticmethod
+    def _clean_display_speaker_name(raw: str) -> str:
+        s = re.sub(r"^(?:Wr\.|Operations\s+|Messrs\.\s+)", "Mr. ", (raw or "").strip()).strip()
+        s = re.sub(r"\s+", " ", s)
+        return s
+
+    @staticmethod
+    def _is_full_person_name(name: str) -> bool:
+        parts = [p for p in re.split(r"\s+", (name or "").strip()) if p]
+        if len(parts) < 2:
+            return False
+        first = parts[0].rstrip(".").lower()
+        return first not in _SPEAKER_TITLES and first not in {"wr", "operations"}
+
     def _ingest_participant_parquet(
         self,
         pq_path: Path,
         roster: dict[str, dict[str, str]],
         catalog_by_key: dict[str, dict[str, Any]] | None = None,
         surname_genders: dict[str, set[str]] | None = None,
+        accumulate_turns: bool = False,
     ) -> None:
         """Read participant metadata columns from a single Parquet file."""
         try:
@@ -264,6 +324,7 @@ class ParquetQueryEngine:
                 "affiliation",
                 "institution",
                 "n_turns",
+                "speaker_ids",
             )
             cols = [c for c in desired if c in schema_names]
             if not cols:
@@ -272,17 +333,32 @@ class ParquetQueryEngine:
             for r in table.to_pylist():
                 gender = _normalize_gender(r.get("gender"))
                 role = str(r.get("role_category") or r.get("role") or "").strip()
+                if role.lower() == "unknown":
+                    role = str(r.get("role") or "").strip()
                 affiliation = str(r.get("institution") or r.get("affiliation") or "").strip()
                 n_turns = int(r.get("n_turns") or 0)
-                info = {"gender": gender, "role": role, "affiliation": affiliation}
 
-                board_name = str(r.get("board_member_name") or "").strip()
-                name_raw = str(r.get("name_raw") or "").strip()
+                board_name = self._clean_display_speaker_name(str(r.get("board_member_name") or ""))
+                name_raw = self._clean_display_speaker_name(str(r.get("name_raw") or ""))
                 name_norm = str(r.get("name_norm") or "").strip()
+                speaker_ids_raw = str(r.get("speaker_ids") or "").strip()
+                extra_sids = [
+                    tok.strip()
+                    for tok in re.split(r"[,;\s]+", speaker_ids_raw)
+                    if tok.strip()
+                ]
+
+                display_name = board_name or name_raw or (name_norm.title() if name_norm else "")
+                info = {
+                    "gender": gender,
+                    "role": role,
+                    "affiliation": affiliation,
+                    "name": display_name,
+                }
 
                 keys: set[str] = set()
                 surname_keys: set[str] = set()
-                for raw_k in (name_norm, name_raw, board_name):
+                for raw_k in (name_norm, name_raw, board_name, *extra_sids):
                     if not raw_k:
                         continue
                     norm_k = _norm_speaker(raw_k)
@@ -297,30 +373,43 @@ class ParquetQueryEngine:
                     existing = roster.get(key)
                     if existing is None:
                         roster[key] = dict(info)
-                    elif not existing.get("gender") and gender:
-                        existing["gender"] = gender
+                    else:
+                        if not existing.get("gender") and gender:
+                            existing["gender"] = gender
+                        if not existing.get("role") and role:
+                            existing["role"] = role
+                        if (
+                            display_name
+                            and self._is_full_person_name(display_name)
+                            and not self._is_full_person_name(existing.get("name", ""))
+                        ):
+                            existing["name"] = display_name
 
                 if surname_genders is not None and gender:
                     for surname_k in surname_keys:
                         surname_genders.setdefault(surname_k, set()).add(gender)
 
                 if catalog_by_key is not None:
-                    display_name = board_name or name_raw or name_norm
                     if not display_name:
                         continue
-                    # For search matching in text_metadata, raw/norm surname or full name works well;
-                    # prefer board_member_name for display and keep search_value clean.
-                    canonical_key = _norm_speaker(display_name)
+                    # Group catalog entries by normalized surname/name_norm so honorific variants
+                    # ('Mr. Bernanke', 'Chairman Bernanke', 'Ben S. Bernanke') merge into one clean entry
+                    canonical_key = (
+                        _norm_speaker(name_norm)
+                        or _speaker_surname_key(display_name)
+                        or _norm_speaker(display_name)
+                    )
                     if not canonical_key:
                         continue
                     aliases = {
-                        a for a in (board_name, name_raw, name_norm) if a
+                        a for a in (board_name, name_raw, name_norm, *extra_sids) if a
                     }
+                    search_val = name_norm or _speaker_surname_key(display_name) or display_name
                     existing = catalog_by_key.get(canonical_key)
                     if existing is None:
                         catalog_by_key[canonical_key] = {
                             "name": display_name,
-                            "search_value": name_raw or display_name,
+                            "search_value": search_val,
                             "role": role,
                             "affiliation": affiliation,
                             "gender": gender,
@@ -329,7 +418,17 @@ class ParquetQueryEngine:
                             "search_blob": " ".join(_norm_speaker(a) for a in aliases),
                         }
                     else:
-                        existing["n_turns"] = max(existing["n_turns"], n_turns)
+                        if accumulate_turns:
+                            existing["n_turns"] = existing["n_turns"] + n_turns
+                        else:
+                            existing["n_turns"] = max(existing["n_turns"], n_turns)
+                        if (
+                            self._is_full_person_name(display_name)
+                            and not self._is_full_person_name(existing["name"])
+                        ) or (
+                            board_name and existing["name"] != board_name
+                        ):
+                            existing["name"] = board_name or display_name
                         if not existing["role"] and role:
                             existing["role"] = role
                         if not existing["affiliation"] and affiliation:
@@ -356,9 +455,11 @@ class ParquetQueryEngine:
         if flat_file.is_file():
             self._ingest_participant_parquet(flat_file, roster, surname_genders=surname_genders)
 
-        # 2. Legacy yearly partitions participants/year=*/part-*.parquet
+        # 2. Legacy yearly partitions participants/year=*/part-*.parquet (only if flat_file absent or in same data root)
         part_dir = self.settings.resolve_participants_dir()
-        if part_dir.is_dir():
+        if part_dir.is_dir() and (
+            not flat_file.is_file() or part_dir.parent == flat_file.parent
+        ):
             for year_dir in sorted(part_dir.glob("year=*")):
                 m = _YEAR_RE.search(year_dir.name)
                 if years and m and int(m.group(1)) not in years:
@@ -391,11 +492,58 @@ class ParquetQueryEngine:
         catalog_by_key: dict[str, dict[str, Any]] = {}
 
         if flat_file.is_file():
-            self._ingest_participant_parquet(flat_file, roster, catalog_by_key)
+            self._ingest_participant_parquet(
+                flat_file, roster, catalog_by_key, accumulate_turns=True
+            )
 
         if part_dir.is_dir():
             for pq_path in sorted(part_dir.glob("year=*/part-*.parquet")):
-                self._ingest_participant_parquet(pq_path, roster, catalog_by_key)
+                self._ingest_participant_parquet(
+                    pq_path, roster, catalog_by_key, accumulate_turns=not flat_file.is_file()
+                )
+
+        # Supplement with distinct speakers from speeches text_metadata so all speech authors appear
+        speeches_meta_dir = self.settings.resolve_text_metadata_dir() / "doc_type=speeches"
+        if speeches_meta_dir.is_dir():
+            for pq_path in sorted(speeches_meta_dir.glob("year=*/part-*.parquet")):
+                try:
+                    schema_names = set(pq.read_schema(pq_path).names)
+                    if "speaker" not in schema_names:
+                        continue
+                    cols = [c for c in ("speaker", "speaker_role") if c in schema_names]
+                    tbl = pq.read_table(pq_path, columns=cols)
+                    spk_list = tbl["speaker"].to_pylist()
+                    role_list = tbl["speaker_role"].to_pylist() if "speaker_role" in cols else [""] * len(spk_list)
+                    for sp_raw, rl_raw in zip(spk_list, role_list):
+                        sp = str(sp_raw or "").strip()
+                        if not sp:
+                            continue
+                        clean_sp = sp.split(",", 1)[0].strip()
+                        ck = _speaker_surname_key(clean_sp) or _norm_speaker(clean_sp)
+                        if not ck:
+                            continue
+                        rl = str(rl_raw or "").strip()
+                        existing = catalog_by_key.get(ck)
+                        if existing is None:
+                            catalog_by_key[ck] = {
+                                "name": clean_sp,
+                                "search_value": ck,
+                                "role": rl or "Federal Reserve Speaker",
+                                "affiliation": rl,
+                                "gender": "",
+                                "n_turns": 1,
+                                "aliases": {sp, clean_sp, ck},
+                                "search_blob": " ".join({_norm_speaker(sp), _norm_speaker(clean_sp), ck}),
+                            }
+                        else:
+                            if self._is_full_person_name(clean_sp) and not self._is_full_person_name(existing["name"]):
+                                existing["name"] = clean_sp
+                            if not existing["affiliation"] and rl:
+                                existing["affiliation"] = rl
+                            existing["aliases"].update({sp, clean_sp, ck})
+                            existing["search_blob"] = " ".join(_norm_speaker(a) for a in existing["aliases"])
+                except Exception:
+                    continue
 
         # Supplement / fallback from participants_report.json
         if report_file.is_file():
@@ -522,6 +670,8 @@ class ParquetQueryEngine:
         if meta_dir.is_dir():
             for dt_dir in sorted(p for p in meta_dir.glob("doc_type=*") if p.is_dir()):
                 dt = dt_dir.name.split("=", 1)[1]
+                if dt not in ALLOWED_DOC_TYPES_SET:
+                    continue
                 dt_rows = 0
                 for pq_path in dt_dir.glob("year=*/part-*.parquet"):
                     m = _YEAR_RE.search(pq_path.parent.name)
@@ -779,8 +929,13 @@ class ParquetQueryEngine:
                 params.append(date_to)
 
         if speaker:
-            where_clauses.append("speaker ILIKE ?")
-            params.append(f"%{speaker}%")
+            sp_surname = _speaker_surname_key(speaker)
+            if sp_surname and sp_surname.lower() != speaker.strip().lower():
+                where_clauses.append("(speaker ILIKE ? OR speaker ILIKE ?)")
+                params.extend([f"%{speaker}%", f"%{sp_surname}%"])
+            else:
+                where_clauses.append("speaker ILIKE ?")
+                params.append(f"%{speaker}%")
 
         if query_text:
             if use_regex:
@@ -927,8 +1082,13 @@ class ParquetQueryEngine:
                 outer_clauses.append("d.meeting_date <= ?")
                 outer_params.append(date_to)
         if speaker:
-            outer_clauses.append("d.speaker ILIKE ?")
-            outer_params.append(f"%{speaker}%")
+            sp_surname = _speaker_surname_key(speaker)
+            if sp_surname and sp_surname.lower() != speaker.strip().lower():
+                outer_clauses.append("(d.speaker ILIKE ? OR d.speaker ILIKE ?)")
+                outer_params.extend([f"%{speaker}%", f"%{sp_surname}%"])
+            else:
+                outer_clauses.append("d.speaker ILIKE ?")
+                outer_params.append(f"%{speaker}%")
         outer_sql = " AND ".join(outer_clauses)
 
         join_sql = (
@@ -1333,6 +1493,8 @@ class ParquetQueryEngine:
         if meta_dir.is_dir():
             for dt_dir in sorted(p for p in meta_dir.glob("doc_type=*") if p.is_dir()):
                 dt = dt_dir.name.split("=", 1)[1]
+                if dt not in ALLOWED_DOC_TYPES_SET:
+                    continue
                 year_dir = dt_dir / f"year={year}"
                 if not year_dir.is_dir():
                     continue
@@ -1597,13 +1759,18 @@ class ParquetQueryEngine:
             return [], np.empty((0, 0), dtype=np.float32), []
 
         final_ids = (
-            [cid for cid in ordered_ids if cid in vec_map]
+            [cid for cid in ordered_ids if cid in vec_map or _SUBCHUNK_RE.sub("", cid) in vec_map]
             if ordered_ids
             else [cid for cid in sorted(vec_map.keys()) if meeting_date in cid]
         )
         if not final_ids:
             return [], np.empty((0, 0), dtype=np.float32), []
-        matrix = np.vstack([vec_map[cid] for cid in final_ids]).astype(np.float32)
+        matrix = np.vstack(
+            [
+                vec_map[cid] if cid in vec_map else vec_map[_SUBCHUNK_RE.sub("", cid)]
+                for cid in final_ids
+            ]
+        ).astype(np.float32)
         try:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             np.savez_compressed(
@@ -1650,8 +1817,11 @@ class ParquetQueryEngine:
         if "chunk_id" not in schema_names:
             return [], []
 
+        base_id_list = list({_SUBCHUNK_RE.sub("", cid) for cid in id_list})
+        query_id_list = list({*id_list, *base_id_list})
+
         table = ds.dataset(target_file, format="parquet").to_table(
-            filter=ds.field("chunk_id").isin(id_list)
+            filter=ds.field("chunk_id").isin(query_id_list)
         )
         if table.num_rows == 0:
             return [], []
@@ -1679,16 +1849,20 @@ class ParquetQueryEngine:
                 scores["monetary_aggregates"] = scores["gdp_activity"]
             elif scores.get("monetary_aggregates", 0.0) == 0.0 and scores.get("gdp_activity", 0.0) > 0.0:
                 scores["monetary_aggregates"] = scores["gdp_activity"]
-            raw_by_id[cid] = {
+            entry_payload = {
                 "label_name": str(r.get("label_name") or ""),
                 "subclass_label_name": str(r.get("subclass_label_name") or "") or None,
                 "p_relevant": float(r["p_relevant"]) if r.get("p_relevant") is not None else None,
                 "scores": scores,
             }
+            raw_by_id[cid] = entry_payload
+            base_cid = _SUBCHUNK_RE.sub("", cid)
+            if base_cid not in raw_by_id:
+                raw_by_id[base_cid] = entry_payload
 
         ordered: list[dict[str, Any]] = []
         for cid in id_list:
-            matched = raw_by_id.get(cid)
+            matched = raw_by_id.get(cid) or raw_by_id.get(_SUBCHUNK_RE.sub("", cid))
             if matched is None:
                 continue
             chunk_meta = chunk_lookup.get(cid, {})
@@ -1789,7 +1963,11 @@ class ParquetQueryEngine:
                 _ZS_YEAR_CACHE[cache_key] = (vec_map, score_cols)
 
         vec_map, score_cols = _ZS_YEAR_CACHE[cache_key]
-        matched_vecs = [vec_map[cid] for cid in ordered_ids if cid in vec_map]
+        matched_vecs = [
+            vec_map[cid] if cid in vec_map else vec_map[_SUBCHUNK_RE.sub("", cid)]
+            for cid in ordered_ids
+            if cid in vec_map or _SUBCHUNK_RE.sub("", cid) in vec_map
+        ]
         if not matched_vecs:
             return np.empty((0, 0), dtype=np.float32), []
         return np.vstack(matched_vecs).astype(np.float32), score_cols

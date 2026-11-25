@@ -45,8 +45,11 @@ import { api } from "../lib/api";
 import {
   CORPUS_MAX_DATE,
   CORPUS_MIN_DATE,
+  DEFAULT_DATE_FROM,
+  DEFAULT_DATE_TO,
   clampCorpusDate,
   formatSigFigs,
+  openNativeDatePicker,
 } from "../lib/format";
 import type {
   ClassificationInspectorResponse,
@@ -107,9 +110,9 @@ export const ExplorerPage: React.FC = () => {
   const [docTypes, setDocTypes] = useState<DocTypeOption[]>([]);
   const [macroCategories, setMacroCategories] = useState<MacroCategoryItem[]>([]);
 
-  // Unified Date Range (Date From + optional Date To, capped at 2020-12-31) + Multi-select Doc Types + Extended Score Thresholds
-  const [dateFrom, setDateFrom] = useState(CORPUS_MIN_DATE);
-  const [dateTo, setDateTo] = useState(CORPUS_MAX_DATE);
+  // Unified Date Range (Date From + optional Date To, default 2000-01-01 to 2001-12-31) + Multi-select Doc Types + Extended Score Thresholds
+  const [dateFrom, setDateFrom] = useState(DEFAULT_DATE_FROM);
+  const [dateTo, setDateTo] = useState(DEFAULT_DATE_TO);
   const [speakerFilter, setSpeakerFilter] = useState("");
   const [docTypeFilters, setDocTypeFilters] = useState<string[]>([]);
   const [queryText, setQueryText] = useState("");
@@ -117,6 +120,7 @@ export const ExplorerPage: React.FC = () => {
   const [scoreFilter, setScoreFilter] = useState<ScoreThresholdFilterValue>(
     EMPTY_SCORE_THRESHOLD_FILTER
   );
+  const [downloadingMeetingCsv, setDownloadingMeetingCsv] = useState<"single" | "all" | null>(null);
 
   const [results, setResults] = useState<SearchDocumentItem[]>([]);
   const [totalResults, setTotalResults] = useState(0);
@@ -428,10 +432,27 @@ export const ExplorerPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
+  // Auto-update search whenever any filter parameter changes (debounced 220ms)
   useEffect(() => {
-    if (!searchParams.get("portfolio")) {
+    if (searchParams.get("portfolio")) return;
+    const timer = window.setTimeout(() => {
       executeSearch(undefined, false);
-    }
+    }, 220);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    dateFrom,
+    dateTo,
+    speakerFilter,
+    docTypeFilters,
+    queryText,
+    useRegex,
+    scoreFilter,
+    sqlFilter,
+    dbVersionRevision,
+  ]);
+
+  useEffect(() => {
     if (selectedMeeting && activeDocType) {
       openDocument(selectedMeeting, activeDocType, false);
     }
@@ -1043,6 +1064,86 @@ export const ExplorerPage: React.FC = () => {
   const isInBasket = (dt: string, mDate: string) =>
     basket.some((d) => d.doc_type === dt && d.meeting_date === mDate);
 
+  // Download CSV of currently selected document or all documents matching the selected meeting (Req 4)
+  const downloadMeetingChunksCsv = async (mode: "single" | "all") => {
+    if (!selectedMeeting) return;
+    setDownloadingMeetingCsv(mode);
+    try {
+      const esc = (val: string | number | undefined | null) => {
+        const s = val === undefined || val === null ? "" : String(val);
+        return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      };
+      const targetDocs =
+        mode === "all" && bundle && bundle.siblings.length > 0
+          ? bundle.siblings.map((s) => ({
+              doc_type: s.doc_type,
+              doc_type_label: s.doc_type_label || s.doc_type,
+            }))
+          : [
+              {
+                doc_type: activeDocType,
+                doc_type_label: activeSibling?.doc_type_label || activeDocType,
+              },
+            ];
+
+      const headers = [
+        "meeting_date",
+        "doc_type",
+        "doc_type_label",
+        "sequence_num",
+        "chunk_id",
+        "section",
+        "speaker",
+        "speaker_role",
+        "char_count",
+        "text_content",
+      ];
+      const lines = [headers.join(",")];
+
+      const chunkResponses = await Promise.all(
+        targetDocs.map((d) =>
+          api
+            .getDocumentChunks(d.doc_type, selectedMeeting, { limit: 50000, offset: 0 })
+            .then((res) => ({ ...d, chunks: res.chunks || [] }))
+        )
+      );
+
+      for (const docGroup of chunkResponses) {
+        for (const ch of docGroup.chunks) {
+          lines.push(
+            [
+              selectedMeeting,
+              docGroup.doc_type,
+              docGroup.doc_type_label,
+              ch.sequence_num,
+              ch.chunk_id,
+              ch.section,
+              ch.speaker,
+              ch.speaker_role,
+              ch.char_count,
+              ch.text_content,
+            ]
+              .map(esc)
+              .join(",")
+          );
+        }
+      }
+
+      const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download =
+        mode === "all"
+          ? `miningfomc_meeting_${selectedMeeting}_all_documents.csv`
+          : `miningfomc_${selectedMeeting}_${activeDocType}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setDownloadingMeetingCsv(null);
+    }
+  };
+
   // Reusable Matching Documents Table (Vertically Resizable + Locally Filterable + CSV Export)
   const renderMatchingDocumentsPanel = (maximized: boolean) => (
     <div
@@ -1305,7 +1406,7 @@ export const ExplorerPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Multi-Criteria Search Bar (Unified Date Range + Multi-Select Doc Types + Speaker + Extended Score Thresholds) */}
+      {/* Multi-Criteria Search Bar (Auto-Reactive + Predefined Date Picker + Multi-Select Doc Types + Speaker + Extended Score Thresholds) */}
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -1313,7 +1414,7 @@ export const ExplorerPage: React.FC = () => {
         }}
         className="panel p-5 space-y-4"
       >
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <button
             type="button"
             onClick={() => setFiltersCollapsed((v) => !v)}
@@ -1325,11 +1426,18 @@ export const ExplorerPage: React.FC = () => {
             ) : (
               <ChevronUp className="w-4 h-4 text-accent" />
             )}
-            <span>Multi-Criteria Search</span>
+            <span>Multi-Criteria Search (Auto-Reactive)</span>
           </button>
-          <span className="text-[10px] font-mono text-zinc-400 hidden sm:inline">
-            {filtersCollapsed ? "Expand filters" : "Collapse filters"}
-          </span>
+          <div className="flex items-center gap-2">
+            {searching && (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-sm bg-accent-soft border border-accent text-[11px] font-mono text-accent-dark animate-pulse">
+                Server computing: filtering Parquet partitions...
+              </span>
+            )}
+            <span className="text-[10px] font-mono text-zinc-400 hidden sm:inline">
+              {filtersCollapsed ? "Expand filters" : "Collapse filters"}
+            </span>
+          </div>
         </div>
 
         {!filtersCollapsed && (
@@ -1344,8 +1452,9 @@ export const ExplorerPage: React.FC = () => {
               min={CORPUS_MIN_DATE}
               max={CORPUS_MAX_DATE}
               value={dateFrom}
+              onClick={openNativeDatePicker}
               onChange={(e) => setDateFrom(clampCorpusDate(e.target.value))}
-              className="input-field font-mono text-xs"
+              className="input-field font-mono text-xs cursor-pointer"
             />
           </div>
           <div>
@@ -1357,9 +1466,10 @@ export const ExplorerPage: React.FC = () => {
               min={CORPUS_MIN_DATE}
               max={CORPUS_MAX_DATE}
               value={dateTo}
+              onClick={openNativeDatePicker}
               onChange={(e) => setDateTo(clampCorpusDate(e.target.value))}
               title="Leave empty to match Date From as an exact single date"
-              className="input-field font-mono text-xs"
+              className="input-field font-mono text-xs cursor-pointer"
             />
           </div>
           <div>
@@ -1370,7 +1480,7 @@ export const ExplorerPage: React.FC = () => {
               options={docTypes}
               selected={docTypeFilters}
               onChange={setDocTypeFilters}
-              placeholder="All Document Types"
+              placeholder="All 7 Active Types"
             />
           </div>
           <div>
@@ -1395,6 +1505,38 @@ export const ExplorerPage: React.FC = () => {
               className="input-field text-xs"
             />
           </div>
+        </div>
+
+        {/* Quick Date Presets */}
+        <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-mono">
+          <span className="text-muted uppercase text-[10px] mr-1">Quick Periods:</span>
+          {[
+            { label: "2000–2001 (Default)", from: DEFAULT_DATE_FROM, to: DEFAULT_DATE_TO },
+            { label: "1990–1999", from: "1990-01-01", to: "1999-12-31" },
+            { label: "2000–2009", from: "2000-01-01", to: "2009-12-31" },
+            { label: "2008 Crisis", from: "2007-08-01", to: "2009-12-31" },
+            { label: "2010–2020", from: "2010-01-01", to: "2020-12-31" },
+            { label: "Full Corpus (1976–2020)", from: CORPUS_MIN_DATE, to: CORPUS_MAX_DATE },
+          ].map((preset) => {
+            const active = dateFrom === preset.from && dateTo === preset.to;
+            return (
+              <button
+                key={preset.label}
+                type="button"
+                onClick={() => {
+                  setDateFrom(preset.from);
+                  setDateTo(preset.to);
+                }}
+                className={`px-2 py-0.5 rounded-sm border transition-colors ${
+                  active
+                    ? "bg-ink text-white border-ink"
+                    : "bg-surface text-muted border-border hover:border-ink hover:text-ink"
+                }`}
+              >
+                {preset.label}
+              </button>
+            );
+          })}
         </div>
 
         {/* Extended Shared Score & Classifier Probability Threshold Filter (Req 2.2) */}
@@ -1472,15 +1614,15 @@ export const ExplorerPage: React.FC = () => {
               Enable Regex Pushdown
             </label>
             <span className="text-[11px] font-mono text-zinc-400">
-              Leave Date To empty for an exact single-date match (max 2020-12-31).
+              Results update automatically as you adjust any parameter.
             </span>
           </div>
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => {
-                setDateFrom(CORPUS_MIN_DATE);
-                setDateTo(CORPUS_MAX_DATE);
+                setDateFrom(DEFAULT_DATE_FROM);
+                setDateTo(DEFAULT_DATE_TO);
                 setSpeakerFilter("");
                 setDocTypeFilters([]);
                 setQueryText("");
@@ -1491,11 +1633,8 @@ export const ExplorerPage: React.FC = () => {
               }}
               className="btn-secondary text-xs"
             >
-              Reset
-            </button>
-            <button type="submit" disabled={searching} className="btn-primary text-xs">
-              <Search className="w-3.5 h-3.5" />
-              {searching ? "Querying Parquet..." : "Search Corpus"}
+              <RotateCcw className="w-3.5 h-3.5" />
+              Reset to Default (2000–2001)
             </button>
           </div>
         </div>
@@ -1579,6 +1718,30 @@ export const ExplorerPage: React.FC = () => {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={downloadingMeetingCsv !== null}
+                onClick={() => downloadMeetingChunksCsv("single")}
+                title="Download CSV of the selected document in this meeting"
+                className="btn-secondary text-xs"
+              >
+                <Download className="w-3.5 h-3.5" />
+                {downloadingMeetingCsv === "single"
+                  ? "Downloading Doc CSV..."
+                  : `Download ${activeSibling?.doc_type_label || activeDocType} CSV`}
+              </button>
+              <button
+                type="button"
+                disabled={downloadingMeetingCsv !== null}
+                onClick={() => downloadMeetingChunksCsv("all")}
+                title="Download CSV with all documents matching this meeting date"
+                className="btn-secondary text-xs"
+              >
+                <Download className="w-3.5 h-3.5" />
+                {downloadingMeetingCsv === "all"
+                  ? "Downloading All Meeting Docs..."
+                  : `Download All Meeting Docs CSV (${bundle?.siblings.length || 1})`}
+              </button>
               <button
                 type="button"
                 onClick={() =>

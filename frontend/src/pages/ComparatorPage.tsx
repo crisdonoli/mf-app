@@ -55,8 +55,11 @@ import { api } from "../lib/api";
 import {
   CORPUS_MAX_DATE,
   CORPUS_MIN_DATE,
+  DEFAULT_DATE_FROM,
+  DEFAULT_DATE_TO,
   clampCorpusDate,
   formatSigFigs,
+  openNativeDatePicker,
 } from "../lib/format";
 import type {
   AggregationMethod,
@@ -89,15 +92,16 @@ export const ComparatorPage: React.FC = () => {
   const [docTypes, setDocTypes] = useState<DocTypeOption[]>([]);
   const [macroCategories, setMacroCategories] = useState<MacroCategoryItem[]>([]);
 
-  // Basket search filters (Multi-select Document Type, Unified Date Range <= 2020, Speaker, Extended Score Thresholds)
+  // Basket search filters (Multi-select Document Type, Default Date Range 2000–2001, Speaker, Extended Score Thresholds)
   const [searchDocTypes, setSearchDocTypes] = useState<string[]>([]);
-  const [searchDateFrom, setSearchDateFrom] = useState("");
-  const [searchDateTo, setSearchDateTo] = useState("");
+  const [searchDateFrom, setSearchDateFrom] = useState(DEFAULT_DATE_FROM);
+  const [searchDateTo, setSearchDateTo] = useState(DEFAULT_DATE_TO);
   const [searchSpeaker, setSearchSpeaker] = useState("");
   const [searchText, setSearchText] = useState("");
   const [scoreFilter, setScoreFilter] = useState<ScoreThresholdFilterValue>(
     EMPTY_SCORE_THRESHOLD_FILTER
   );
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [filtersCollapsed, setFiltersCollapsed] = useState(false);
   const [sqlFilter, setSqlFilter] = useState("");
   const [savedFilters, setSavedFilters] = useState<CustomFilter[]>([]);
@@ -275,10 +279,50 @@ export const ComparatorPage: React.FC = () => {
     }
   };
 
+  // Auto-update candidate search whenever any filter parameter changes (debounced 220ms)
   useEffect(() => {
-    runCandidateSearch();
+    const timer = window.setTimeout(() => {
+      runCandidateSearch();
+    }, 220);
+    return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [
+    searchDocTypes,
+    searchDateFrom,
+    searchDateTo,
+    searchSpeaker,
+    searchText,
+    scoreFilter,
+    sqlFilter,
+  ]);
+
+  // Temporal Partitions (S) is ONLY available when comparing 1 distinct meeting date (Req 9)
+  const distinctMeetingCount = useMemo(
+    () => new Set(basket.map((d) => d.meeting_date)).size,
+    [basket]
+  );
+  const effectiveNPartitions = distinctMeetingCount === 1 ? nPartitions : 1;
+
+  // Group basket documents by doc_type for clean visual separation (Req 6)
+  const basketByDocType = useMemo(() => {
+    const map = new Map<
+      string,
+      { doc_type: string; doc_type_label: string; items: typeof basket }
+    >();
+    for (const item of basket) {
+      const existing = map.get(item.doc_type);
+      if (existing) {
+        existing.items.push(item);
+      } else {
+        map.set(item.doc_type, {
+          doc_type: item.doc_type,
+          doc_type_label: item.doc_type_label || item.doc_type,
+          items: [item],
+        });
+      }
+    }
+    return Array.from(map.values());
+  }, [basket]);
 
   // Live reactive comparison query (uncapped for both ungrouped and tree-grouped modes)
   useEffect(() => {
@@ -294,7 +338,7 @@ export const ComparatorPage: React.FC = () => {
       api
         .compareDocuments({
           documents: basket.map((d) => ({ doc_type: d.doc_type, meeting_date: d.meeting_date })),
-          n_partitions: nPartitions,
+          n_partitions: effectiveNPartitions,
           data_source: dataSource,
           metric,
           normalization,
@@ -333,7 +377,7 @@ export const ComparatorPage: React.FC = () => {
     };
   }, [
     basket,
-    nPartitions,
+    effectiveNPartitions,
     dataSource,
     metric,
     normalization,
@@ -804,8 +848,7 @@ S${t.slice_num}`;
     comparison.categories.forEach((cat, catIdx) => {
       if (!activeTopicSet.has(cat.id)) return;
       visibleCohorts.forEach((cohort) => {
-        const seriesName =
-          visibleCohorts.length === 1 ? cat.label : `${cohort.label} · ${cat.label}`;
+        const seriesName = `${cohort.label} · ${cat.label}`;
         const color = DOCUMENT_COLORS[colorIdx % DOCUMENT_COLORS.length];
         colorIdx += 1;
 
@@ -1233,27 +1276,56 @@ S${t.slice_num}`;
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-        {/* Left Column: Compact 3-Row Scrollable Basket + Uncapped Filter & Add All */}
-        <div className="xl:col-span-4 space-y-4">
+      <div className="flex flex-col xl:flex-row gap-6 items-start">
+        {/* Left Column: Sideways-Collapsible Basket (Separated by Doc Type) & Auto-Reactive Filter Builder */}
+        {sidebarCollapsed ? (
+          <div className="panel p-2 flex xl:flex-col items-center justify-between gap-3 w-full xl:w-12 shrink-0 bg-surface">
+            <button
+              type="button"
+              onClick={() => setSidebarCollapsed(false)}
+              title="Expand Basket & Filters panel sideways"
+              className="btn-secondary p-1.5"
+            >
+              <ChevronRight className="w-4 h-4 text-accent" />
+            </button>
+            <div
+              onClick={() => setSidebarCollapsed(false)}
+              className="cursor-pointer text-[11px] font-mono uppercase tracking-wider font-semibold text-ink xl:[writing-mode:vertical-rl] xl:rotate-180 py-2 select-none"
+            >
+              Basket ({basket.length}) &amp; Filters
+            </div>
+          </div>
+        ) : (
+        <div className="w-full xl:w-[375px] shrink-0 space-y-4">
           <div className="panel p-4 space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <h2 className="text-xs font-mono uppercase tracking-wider font-semibold text-ink">
                 Comparison Basket ({basket.length})
               </h2>
-              {basket.length > 0 && (
+              <div className="flex items-center gap-2">
+                {basket.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      clearBasket();
+                      setGroupingTree(null);
+                    }}
+                    className="text-xs font-mono text-zinc-400 hover:text-red-600 flex items-center gap-1"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    Clear
+                  </button>
+                )}
                 <button
                   type="button"
-                  onClick={() => {
-                    clearBasket();
-                    setGroupingTree(null);
-                  }}
-                  className="text-xs font-mono text-zinc-400 hover:text-red-600 flex items-center gap-1"
+                  onClick={() => setSidebarCollapsed(true)}
+                  title="Collapse panel sideways to gain horizontal chart space"
+                  className="btn-secondary py-1 px-2 text-[11px]"
                 >
-                  <Trash2 className="w-3 h-3" />
-                  Clear
+                  <ChevronLeft className="w-3.5 h-3.5 text-accent" />
+                  Hide
                 </button>
-              )}
+              </div>
             </div>
 
             {basket.length === 0 ? (
@@ -1261,53 +1333,69 @@ S${t.slice_num}`;
                 Select documents below (or click Add All) to compare standardized topic profiles.
               </p>
             ) : (
-              <div className="max-h-[152px] overflow-y-auto pr-1 flex flex-wrap gap-1.5 content-start">
-                {basket.map((doc, idx) => {
-                  const color = DOCUMENT_COLORS[idx % DOCUMENT_COLORS.length];
-                  return (
-                    <div
-                      key={`${doc.doc_type}::${doc.meeting_date}`}
-                      className="inline-flex items-center gap-1.5 px-2 py-1 border border-border rounded-sm bg-canvas text-[11px] font-mono max-w-full"
-                    >
-                      <span
-                        className="w-2 h-2 rounded-full shrink-0"
-                        style={{ backgroundColor: color }}
-                      />
-                      <span className="font-semibold text-ink">{doc.meeting_date}</span>
-                      <span className="text-muted truncate max-w-[90px]">
-                        {doc.doc_type_label || doc.doc_type}
+              <div className="max-h-[220px] overflow-y-auto pr-1 space-y-2.5">
+                {basketByDocType.map((group) => (
+                  <div
+                    key={group.doc_type}
+                    className="border border-border rounded-sm bg-canvas/60 p-2 space-y-1.5"
+                  >
+                    <div className="flex items-center justify-between gap-2 border-b border-border/60 pb-1">
+                      <span className="text-[10px] font-mono uppercase font-semibold text-accent-dark">
+                        {group.doc_type_label} ({group.items.length})
                       </span>
                       <button
                         type="button"
-                        onClick={() => removeFromBasket(doc.doc_type, doc.meeting_date)}
-                        className="text-zinc-400 hover:text-ink shrink-0"
-                        title="Remove document"
+                        onClick={() =>
+                          setBasket(basket.filter((b) => b.doc_type !== group.doc_type))
+                        }
+                        title={`Remove all ${group.doc_type_label} from basket`}
+                        className="text-[10px] font-mono text-zinc-400 hover:text-red-600"
                       >
-                        <X className="w-3 h-3" />
+                        Remove type
                       </button>
                     </div>
-                  );
-                })}
+                    <div className="flex flex-wrap gap-1.5">
+                      {group.items.map((doc) => {
+                        const globalIdx = basket.findIndex(
+                          (b) =>
+                            b.doc_type === doc.doc_type && b.meeting_date === doc.meeting_date
+                        );
+                        const color =
+                          DOCUMENT_COLORS[Math.max(0, globalIdx) % DOCUMENT_COLORS.length];
+                        return (
+                          <div
+                            key={`${doc.doc_type}::${doc.meeting_date}`}
+                            className="inline-flex items-center gap-1.5 px-2 py-0.5 border border-border rounded-sm bg-surface text-[11px] font-mono"
+                          >
+                            <span
+                              className="w-2 h-2 rounded-full shrink-0"
+                              style={{ backgroundColor: color }}
+                            />
+                            <span className="font-semibold text-ink">{doc.meeting_date}</span>
+                            <button
+                              type="button"
+                              onClick={() => removeFromBasket(doc.doc_type, doc.meeting_date)}
+                              className="text-zinc-400 hover:text-ink shrink-0"
+                              title="Remove document"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>
 
-          {/* Advanced Basket Selector & Filters */}
+          {/* Advanced Basket Selector & Auto-Reactive Filters */}
           <div className="panel p-4 space-y-3">
             <div className="flex items-center justify-between gap-2">
-              <button
-                type="button"
-                onClick={() => setFiltersCollapsed((v) => !v)}
-                aria-expanded={!filtersCollapsed}
-                className="inline-flex items-center gap-1.5 text-xs font-mono uppercase tracking-wider font-semibold text-ink hover:text-accent-dark transition-colors text-left"
-              >
-                {filtersCollapsed ? (
-                  <ChevronDown className="w-3.5 h-3.5 text-accent shrink-0" />
-                ) : (
-                  <ChevronUp className="w-3.5 h-3.5 text-accent shrink-0" />
-                )}
-                <span>Add Documents to Basket</span>
-              </button>
+              <div className="text-xs font-mono uppercase tracking-wider font-semibold text-ink">
+                Add Documents to Basket
+              </div>
               <button
                 type="button"
                 disabled={candidatesTotal === 0 || addingAll}
@@ -1316,29 +1404,27 @@ S${t.slice_num}`;
               >
                 <ListPlus className="w-3 h-3" />
                 {addingAll
-                  ? "Adding..."
+                  ? "Server loading all..."
                   : `Add All (${candidatesTotal.toLocaleString()})`}
               </button>
             </div>
 
-            {!filtersCollapsed && (
-              <>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                runCandidateSearch();
-              }}
-              className="space-y-2.5"
-            >
+            {searching && (
+              <div className="px-2.5 py-1 rounded-sm bg-accent-soft border border-accent text-[10px] font-mono text-accent-dark animate-pulse">
+                Server computing: updating matching documents...
+              </div>
+            )}
+
+            <div className="space-y-2.5">
               <MultiDocTypeSelect
                 options={docTypes}
                 selected={searchDocTypes}
                 onChange={setSearchDocTypes}
-                placeholder="All Document Types"
+                placeholder="All 7 Active Types"
                 compact
               />
 
-              <div className="space-y-1">
+              <div className="space-y-1.5">
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="block text-[10px] font-mono uppercase text-muted mb-0.5">
@@ -1349,8 +1435,9 @@ S${t.slice_num}`;
                       min={CORPUS_MIN_DATE}
                       max={CORPUS_MAX_DATE}
                       value={searchDateFrom}
+                      onClick={openNativeDatePicker}
                       onChange={(e) => setSearchDateFrom(clampCorpusDate(e.target.value))}
-                      className="input-field font-mono text-[11px]"
+                      className="input-field font-mono text-[11px] cursor-pointer"
                     />
                   </div>
                   <div>
@@ -1362,15 +1449,40 @@ S${t.slice_num}`;
                       min={CORPUS_MIN_DATE}
                       max={CORPUS_MAX_DATE}
                       value={searchDateTo}
+                      onClick={openNativeDatePicker}
                       onChange={(e) => setSearchDateTo(clampCorpusDate(e.target.value))}
                       title="Leave empty for an exact single-date match on Date From"
-                      className="input-field font-mono text-[11px]"
+                      className="input-field font-mono text-[11px] cursor-pointer"
                     />
                   </div>
                 </div>
-                <p className="text-[10px] font-mono text-zinc-400">
-                  Leave Date To empty for an exact single-date match (max 2020).
-                </p>
+                <div className="flex flex-wrap items-center gap-1 text-[10px] font-mono">
+                  {[
+                    { label: "2000–2001", from: DEFAULT_DATE_FROM, to: DEFAULT_DATE_TO },
+                    { label: "2008 Crisis", from: "2007-08-01", to: "2009-12-31" },
+                    { label: "2010–2020", from: "2010-01-01", to: "2020-12-31" },
+                    { label: "All 1976–2020", from: CORPUS_MIN_DATE, to: CORPUS_MAX_DATE },
+                  ].map((p) => {
+                    const active = searchDateFrom === p.from && searchDateTo === p.to;
+                    return (
+                      <button
+                        key={p.label}
+                        type="button"
+                        onClick={() => {
+                          setSearchDateFrom(p.from);
+                          setSearchDateTo(p.to);
+                        }}
+                        className={`px-1.5 py-0.5 rounded-sm border transition-colors ${
+                          active
+                            ? "bg-ink text-white border-ink"
+                            : "bg-surface text-muted border-border hover:border-ink"
+                        }`}
+                      >
+                        {p.label}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-2">
@@ -1440,12 +1552,7 @@ S${t.slice_num}`;
                   ))}
                 </select>
               </div>
-
-              <button type="submit" disabled={searching} className="btn-secondary w-full text-xs">
-                <Search className="w-3.5 h-3.5" />
-                {searching ? "Filtering..." : "Apply Filters"}
-              </button>
-            </form>
+            </div>
 
             <div className="text-[11px] font-mono text-muted pt-1 border-t border-border flex items-center justify-between">
               <span>
@@ -1499,13 +1606,12 @@ S${t.slice_num}`;
                 );
               })}
             </div>
-              </>
-            )}
           </div>
         </div>
+        )}
 
         {/* Right Column: Controls, Group/Combine Tree Bar, Radar, Flattened Time-Series & CSV Table */}
-        <div className="xl:col-span-8 space-y-4">
+        <div className="flex-1 min-w-0 w-full space-y-4">
           {/* Live Controls */}
           <div className="panel p-4 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1662,70 +1768,74 @@ S${t.slice_num}`;
               </div>
             </div>
 
-            {/* Temporal Partitions (numeric input ONLY) + Synchronized Chronological Radar Scrubber */}
-            <div className="pt-3 border-t border-border flex flex-wrap items-end gap-5">
-              <div className="w-44">
-                <label className="block text-[10px] font-mono uppercase text-muted mb-1">
-                  Temporal Partitions (S)
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  max={50}
-                  value={nPartitions}
-                  onChange={(e) => {
-                    const v = Math.max(1, Math.min(50, Number(e.target.value) || 1));
-                    setNPartitions(v);
-                  }}
-                  className="input-field py-1.5 text-xs font-mono text-center"
-                />
-              </div>
-
-              {resolvedTimeSeries.ticks.length > 1 && (
-                <div className="flex-1 min-w-[260px]">
-                  <div className="flex items-center justify-between text-[10px] font-mono uppercase text-muted mb-1">
-                    <span>Radar Chronological Point</span>
-                    <span className="font-semibold text-ink">
-                      {activeRadarTick
-                        ? `${activeRadarTick.full_label} (${safeRadarTickIdx + 1} / ${resolvedTimeSeries.ticks.length})`
-                        : `Point ${safeRadarTickIdx + 1}`}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      disabled={safeRadarTickIdx <= 0}
-                      onClick={() => setRadarTickIdx((idx) => Math.max(0, idx - 1))}
-                      title="Previous chronological point"
-                      className="btn-secondary py-1 px-2"
-                    >
-                      <ChevronLeft className="w-3.5 h-3.5" />
-                    </button>
+            {/* Temporal Partitions (ONLY available when 1 meeting is selected, Req 9) + Synchronized Chronological Radar Scrubber */}
+            {(distinctMeetingCount === 1 || resolvedTimeSeries.ticks.length > 1) && (
+              <div className="pt-3 border-t border-border flex flex-wrap items-end gap-5">
+                {distinctMeetingCount === 1 && (
+                  <div className="w-44">
+                    <label className="block text-[10px] font-mono uppercase text-muted mb-1">
+                      Temporal Partitions (S)
+                    </label>
                     <input
-                      type="range"
-                      min={0}
-                      max={resolvedTimeSeries.ticks.length - 1}
-                      value={safeRadarTickIdx}
-                      onChange={(e) => setRadarTickIdx(Number(e.target.value))}
-                      className="flex-1 accent-ink"
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={nPartitions}
+                      onChange={(e) => {
+                        const v = Math.max(1, Math.min(50, Number(e.target.value) || 1));
+                        setNPartitions(v);
+                      }}
+                      className="input-field py-1.5 text-xs font-mono text-center"
                     />
-                    <button
-                      type="button"
-                      disabled={safeRadarTickIdx >= resolvedTimeSeries.ticks.length - 1}
-                      onClick={() =>
-                        setRadarTickIdx((idx) =>
-                          Math.min(resolvedTimeSeries.ticks.length - 1, idx + 1)
-                        )
-                      }
-                      title="Next chronological point"
-                      className="btn-secondary py-1 px-2"
-                    >
-                      <ChevronRight className="w-3.5 h-3.5" />
-                    </button>
                   </div>
-                </div>
-              )}
-            </div>
+                )}
+
+                {resolvedTimeSeries.ticks.length > 1 && (
+                  <div className="flex-1 min-w-[260px]">
+                    <div className="flex items-center justify-between text-[10px] font-mono uppercase text-muted mb-1">
+                      <span>Radar Chronological Point</span>
+                      <span className="font-semibold text-ink">
+                        {activeRadarTick
+                          ? `${activeRadarTick.full_label} (${safeRadarTickIdx + 1} / ${resolvedTimeSeries.ticks.length})`
+                          : `Point ${safeRadarTickIdx + 1}`}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={safeRadarTickIdx <= 0}
+                        onClick={() => setRadarTickIdx((idx) => Math.max(0, idx - 1))}
+                        title="Previous chronological point"
+                        className="btn-secondary py-1 px-2"
+                      >
+                        <ChevronLeft className="w-3.5 h-3.5" />
+                      </button>
+                      <input
+                        type="range"
+                        min={0}
+                        max={resolvedTimeSeries.ticks.length - 1}
+                        value={safeRadarTickIdx}
+                        onChange={(e) => setRadarTickIdx(Number(e.target.value))}
+                        className="flex-1 accent-ink"
+                      />
+                      <button
+                        type="button"
+                        disabled={safeRadarTickIdx >= resolvedTimeSeries.ticks.length - 1}
+                        onClick={() =>
+                          setRadarTickIdx((idx) =>
+                            Math.min(resolvedTimeSeries.ticks.length - 1, idx + 1)
+                          )
+                        }
+                        title="Next chronological point"
+                        className="btn-secondary py-1 px-2"
+                      >
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {error && (

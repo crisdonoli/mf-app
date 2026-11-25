@@ -1,9 +1,25 @@
 /** Shared formatting and corpus bound helpers for MiningFOMC V3. */
 
+import type React from "react";
+
 export const CORPUS_MIN_DATE = "1976-01-01";
 export const CORPUS_MAX_DATE = "2020-12-31";
+export const DEFAULT_DATE_FROM = "2000-01-01";
+export const DEFAULT_DATE_TO = "2001-12-31";
 export const CORPUS_MIN_YEAR = 1976;
 export const CORPUS_MAX_YEAR = 2020;
+
+/** Open the browser's native calendar popup immediately on input click at its predefined date. */
+export function openNativeDatePicker(e: React.MouseEvent<HTMLInputElement>): void {
+  const input = e.currentTarget as HTMLInputElement & { showPicker?: () => void };
+  if (typeof input.showPicker === "function") {
+    try {
+      input.showPicker();
+    } catch {
+      // Ignore if already open or unsupported in headless test environments
+    }
+  }
+}
 
 /** Clamp an ISO date string (YYYY-MM-DD) so it never exceeds 2020-12-31. */
 export function clampCorpusDate(raw: string): string {
