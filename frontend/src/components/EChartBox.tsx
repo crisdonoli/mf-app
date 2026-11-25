@@ -10,6 +10,7 @@ interface EChartBoxProps {
   style?: React.CSSProperties;
   onChartClick?: (params: Record<string, unknown>) => void;
   onDataZoom?: (startPct: number, endPct: number) => void;
+  onReady?: (instance: echarts.ECharts | null) => void;
 }
 
 export const EChartBox: React.FC<EChartBoxProps> = ({
@@ -18,17 +19,20 @@ export const EChartBox: React.FC<EChartBoxProps> = ({
   style,
   onChartClick,
   onDataZoom,
+  onReady,
 }) => {
   const { isDark } = useTheme();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const instanceRef = useRef<echarts.ECharts | null>(null);
   const clickCbRef = useRef(onChartClick);
   const zoomCbRef = useRef(onDataZoom);
+  const readyCbRef = useRef(onReady);
   const hintTimerRef = useRef<number | null>(null);
   const [showCtrlHint, setShowCtrlHint] = useState(false);
 
   clickCbRef.current = onChartClick;
   zoomCbRef.current = onDataZoom;
+  readyCbRef.current = onReady;
 
   useEffect(() => {
     const el = containerRef.current;
@@ -36,6 +40,7 @@ export const EChartBox: React.FC<EChartBoxProps> = ({
 
     const chart = echarts.init(el, isDark ? "dark" : undefined, { renderer: "canvas" });
     instanceRef.current = chart;
+    if (readyCbRef.current) readyCbRef.current(chart);
 
     // Block ECharts wheel zoom/roam unless Ctrl is held so normal page scrolling works smoothly
     const handleWheelCapture = (evt: WheelEvent) => {
@@ -90,6 +95,7 @@ export const EChartBox: React.FC<EChartBoxProps> = ({
       observer.disconnect();
       chart.dispose();
       instanceRef.current = null;
+      if (readyCbRef.current) readyCbRef.current(null);
     };
   }, [isDark]);
 

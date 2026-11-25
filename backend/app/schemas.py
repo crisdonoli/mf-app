@@ -208,9 +208,9 @@ class SliceInspectRequest(BaseModel):
     n_partitions: int = Field(default=1, ge=1, le=50)
     query_text: Optional[str] = None
     filter_speaker: Optional[str] = None
-    data_source: Literal["similarity", "zero_shot"] = "similarity"
+    data_source: Literal["similarity", "zero_shot", "relevance"] = "similarity"
     metric: Literal["cosine", "softmax", "log"] = "cosine"
-    normalization: Literal["none", "topic", "slice", "row", "column"] = "none"
+    normalization: Literal["none", "topic", "slice", "time", "row", "column"] = "none"
     granularity: Literal["macro", "subclass"] = "macro"
     macro_category: Optional[str] = None
     limit: int = Field(default=40, ge=1, le=200)
@@ -220,9 +220,9 @@ class SliceInspectRequest(BaseModel):
 class CompareRequest(BaseModel):
     documents: list[CompareDocumentRef] = Field(..., min_items=1, max_items=5000)
     n_partitions: int = Field(default=1, ge=1, le=50)
-    data_source: Literal["similarity", "zero_shot"] = "similarity"
+    data_source: Literal["similarity", "zero_shot", "relevance"] = "similarity"
     metric: Literal["cosine", "softmax", "log"] = "cosine"
-    normalization: Literal["none", "topic", "slice", "row", "column"] = "none"
+    normalization: Literal["none", "topic", "slice", "time", "row", "column"] = "none"
     granularity: Literal["macro", "subclass"] = "macro"
     macro_category: Optional[str] = None
     combine_by: Literal[
@@ -250,3 +250,9 @@ class CompareRequest(BaseModel):
     agg_method: Literal["mean", "median"] = "mean"
     year_range_span: int = Field(default=5, ge=2, le=20)
     grouping_tree: Optional[GroupingTreeConfig] = None
+
+
+class BasketChunksRequest(BaseModel):
+    documents: list[CompareDocumentRef] = Field(..., min_items=1, max_items=5000)
+    data_source: Literal["similarity", "zero_shot", "relevance"] = "zero_shot"
+    limit: int = Field(default=50, ge=1, le=500)

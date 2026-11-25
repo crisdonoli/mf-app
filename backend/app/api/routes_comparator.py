@@ -11,10 +11,18 @@ from ..core.grouping_tree import (
     build_grouping_tree_preview,
     compare_ungrouped_chronological,
     compare_with_grouping_tree,
+    format_basket_raw_chunks_csv,
     format_chronological_csv,
+    get_basket_raw_chunks_table,
     inspect_slice_or_node,
 )
-from ..schemas import CompareRequest, SliceInspectRequest, SplitLevelConfig, TreePreviewRequest
+from ..schemas import (
+    BasketChunksRequest,
+    CompareRequest,
+    SliceInspectRequest,
+    SplitLevelConfig,
+    TreePreviewRequest,
+)
 from .deps_gate import heavy_query_slot
 
 router = APIRouter(prefix="/api/comparator", tags=["Comparator"])
@@ -153,6 +161,36 @@ def export_comparator_csv(
     payload = compare_fomc_documents(body, _user)
     csv_text = format_chronological_csv(payload)
     fname = f"miningfomc_chronological_{body.metric}_{body.normalization}.csv"
+    return PlainTextResponse(
+        content=csv_text,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@router.post("/basket-chunks")
+def basket_raw_chunks_preview(
+    body: BasketChunksRequest,
+    _user: dict = Depends(get_current_user),
+    _gate: None = Depends(heavy_query_slot),
+):
+    """Return a 50-row preview of raw chunk classifier scores across all documents in the basket."""
+    docs = [{"doc_type": d.doc_type, "meeting_date": d.meeting_date} for d in body.documents]
+    return get_basket_raw_chunks_table(
+        docs, data_source=body.data_source, limit=body.limit, export_all=False
+    )
+
+
+@router.post("/basket-chunks/export-csv")
+def export_basket_raw_chunks_csv(
+    body: BasketChunksRequest,
+    _user: dict = Depends(get_current_user),
+    _gate: None = Depends(heavy_query_slot),
+):
+    """Export all chunks and raw classifier scores for all documents in the basket as CSV."""
+    docs = [{"doc_type": d.doc_type, "meeting_date": d.meeting_date} for d in body.documents]
+    csv_text = format_basket_raw_chunks_csv(docs, data_source=body.data_source)
+    fname = f"miningfomc_basket_raw_chunks_{body.data_source}.csv"
     return PlainTextResponse(
         content=csv_text,
         media_type="text/csv; charset=utf-8",

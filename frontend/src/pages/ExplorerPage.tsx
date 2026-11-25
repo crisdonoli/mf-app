@@ -1371,8 +1371,40 @@ export const ExplorerPage: React.FC = () => {
     </div>
   );
 
+  const explorerBlockingMessage =
+    downloadingMeetingCsv === "all"
+      ? `Downloading all documents for meeting ${selectedMeeting}...`
+      : downloadingMeetingCsv === "single"
+      ? `Downloading ${activeDocType} CSV for meeting ${selectedMeeting}...`
+      : loadingBundle
+      ? `Loading meeting bundle & chunks for ${selectedMeeting}...`
+      : loadingSim
+      ? `Computing prototype similarity matrix on server...`
+      : searching
+      ? `Filtering FOMC Parquet partitions on server...`
+      : null;
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 relative">
+      {explorerBlockingMessage && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed inset-0 z-50 bg-canvas/60 backdrop-blur-sm flex items-center justify-center p-4 cursor-wait select-none"
+        >
+          <div className="panel bg-surface border-accent px-6 py-4 shadow-2xl max-w-md w-full flex items-center gap-3.5">
+            <div className="w-5 h-5 rounded-full border-2 border-accent border-t-transparent animate-spin shrink-0" />
+            <div className="min-w-0">
+              <div className="text-xs font-mono uppercase tracking-wider font-semibold text-accent-dark">
+                Server Computing · Please Wait
+              </div>
+              <div className="text-xs font-mono text-ink mt-0.5 truncate">
+                {explorerBlockingMessage}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="flex flex-wrap items-end justify-between gap-4 border-b border-border pb-4">
         <div>
           <span className="text-xs font-mono uppercase tracking-wider text-accent-dark font-semibold">

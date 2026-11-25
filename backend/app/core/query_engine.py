@@ -79,6 +79,7 @@ _DOC_IDS_BY_YEAR_CACHE: BoundedDict = BoundedDict(max_entries=8)
 _DOC_SPEAKER_META_CACHE: BoundedDict = BoundedDict(max_entries=8)
 _SIM_YEAR_CACHE: BoundedDict = BoundedDict(max_entries=4)
 _ZS_YEAR_CACHE: BoundedDict = BoundedDict(max_entries=4)
+_REL_YEAR_CACHE: BoundedDict = BoundedDict(max_entries=8)
 _SEARCH_CACHE = SharedSearchCache(
     "search",
     max_entries=48,
@@ -2046,10 +2047,81 @@ class ParquetQueryEngine:
                     "text_content": ch.get("text_content", ""),
                     "p_relevant": round(p_rel, 4),
                     "p_irrelevant": round(p_irr, 4),
-                    "scores": {
-                        "relevant": round(p_rel, 4),
-                        "irrelevant": round(p_irr, 4),
-                    },
-                }
-            )
+            "scores": {
+                "relevant": round(p_rel, 4),
+                "irrelevant": round(p_irr, 4),
+            },
+        }
+    )
         return ordered
+
+    def load_raw_relevance_matrix(
+        self,
+        doc_type: str,
+        meeting_date: str,
+    ) -> tuple[np.ndarray, list[str]]:
+        """Fast cached relevance probability matrix (N x 2: ['relevant', 'irrelevant']) without reading text_content."""
+        ordered_ids = self.get_ordered_chunk_ids(doc_type, meeting_date)
+        if not ordered_ids:
+            return np.empty((0, 0), dtype=np.float32), []
+
+        rel_file = self.settings.resolve_relevance_file()
+        year = meeting_date[:4]
+        part_rel = rel_file.parent / f"doc_type={doc_type}" / f"year={year}" / "part-000.parquet"
+        target_rel_file = part_rel if part_rel.is_file() else rel_file
+        cache_key = (
+            str(target_rel_file),
+            doc_type,
+            year if part_rel.is_file() else f"_doc_{meeting_date}",
+        )
+
+        if cache_key not in _REL_YEAR_CACHE:
+            rel_map: dict[str, float] = {}
+            if target_rel_file.is_file():
+                schema_names = pq.read_schema(target_rel_file).names
+                cols_low = {c.lower(): c for c in schema_names}
+                id_col = cols_low.get("chunk_id") or cols_low.get("chunk")
+                p_col = (
+                    cols_low.get("p_relevant")
+                    or cols_low.get("relevance_prob")
+                    or cols_low.get("prob")
+                    or cols_low.get("p")
+                    or cols_low.get("score")
+                )
+                if id_col and p_col:
+                    if part_rel.is_file():
+                        tbl = pq.read_table(target_rel_file, columns=[id_col, p_col])
+                    else:
+                        base_ids = {_SUBCHUNK_RE.sub("", cid) for cid in ordered_ids}
+                        query_rel_ids = list({*ordered_ids, *base_ids})
+                        tbl = ds.dataset(target_rel_file, format="parquet").to_table(
+                            columns=[id_col, p_col],
+                            filter=ds.field(id_col).isin(query_rel_ids),
+                        )
+                    cids = tbl[id_col].to_pylist()
+                    pvals = tbl[p_col].to_pylist()
+                    for cid_raw, val in zip(cids, pvals):
+                        if val is None:
+                            continue
+                        fval = float(val)
+                        if not np.isnan(fval):
+                            cid_str = str(cid_raw)
+                            rel_map[cid_str] = fval
+                            base_cid = _SUBCHUNK_RE.sub("", cid_str)
+                            if base_cid not in rel_map:
+                                rel_map[base_cid] = fval
+            _REL_YEAR_CACHE[cache_key] = rel_map
+
+        rel_map = _REL_YEAR_CACHE.get(cache_key) or {}
+        rows: list[list[float]] = []
+        for cid in ordered_ids:
+            raw_p = rel_map.get(cid)
+            if raw_p is None:
+                raw_p = rel_map.get(_SUBCHUNK_RE.sub("", cid))
+            if raw_p is None:
+                continue
+            p_rel = max(0.0, min(1.0, float(raw_p)))
+            rows.append([p_rel, 1.0 - p_rel])
+        if not rows:
+            return np.empty((0, 0), dtype=np.float32), []
+        return np.asarray(rows, dtype=np.float32), ["relevant", "irrelevant"]

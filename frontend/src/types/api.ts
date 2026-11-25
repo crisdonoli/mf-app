@@ -3,7 +3,27 @@
 export type MetricTransform = "cosine" | "softmax" | "log";
 export type NormalizationMode = "none" | "topic" | "slice";
 export type GranularityMode = "macro" | "subclass";
-export type DataSourceMode = "similarity" | "zero_shot";
+export type DataSourceMode = "similarity" | "zero_shot" | "relevance";
+
+export interface BasketChunkRow {
+  chunk_id: string;
+  doc_type: string;
+  doc_type_label: string;
+  meeting_date: string;
+  sequence_num: number;
+  speaker: string;
+  p_relevant: number | null;
+  scores: Record<string, number>;
+}
+
+export interface BasketChunksResponse {
+  data_source: DataSourceMode;
+  total_documents: number;
+  total_chunks: number;
+  preview_count: number;
+  categories: { id: string; label: string }[];
+  chunks: BasketChunkRow[];
+}
 export type CombineByMode =
   | "none"
   | "year"

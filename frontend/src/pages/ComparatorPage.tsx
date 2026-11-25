@@ -12,15 +12,17 @@
  * - 3 Significant Figures precision across all tooltips + CSV Export + Save/Fork Study
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import type * as echarts from "echarts";
 import {
-  AlertCircle,
   ChevronLeft,
   ChevronRight,
+  Copy,
   Download,
   GitBranch,
   GitFork,
+  Image as ImageIcon,
   Layers,
   ListPlus,
   Plus,
@@ -60,6 +62,7 @@ import {
 } from "../lib/format";
 import type {
   AggregationMethod,
+  BasketChunksResponse,
   CompareResponse,
   CustomFilter,
   DataSourceMode,
@@ -76,6 +79,25 @@ import type {
   StudyItem,
   TimeTickMeta,
 } from "../types/api";
+
+type TimeSeriesGlobalScoreMode =
+  | "zero_shot"
+  | "sim_softmax"
+  | "sim_cosine"
+  | "sim_none"
+  | "relevance";
+
+type TimeSeriesNormScope = "per_instance" | "global";
+type TimeSeriesNormDimension = "value" | "time";
+
+interface CustomTimeSeriesDef {
+  id: string;
+  name: string;
+  cohortId: string;
+  topicId: string;
+  dateFrom: string;
+  dateTo: string;
+}
 
 export const ComparatorPage: React.FC = () => {
   const { user } = useAuth();
@@ -122,9 +144,34 @@ export const ComparatorPage: React.FC = () => {
   const [groupingTree, setGroupingTree] = useState<GroupingTreeConfig | null>(null);
   const [treeModalOpen, setTreeModalOpen] = useState(false);
 
-  // Anti-clutter Time-Series controls (1 topic active by default, cohort toggles, semantic zoom window)
-  const [activeTopicIds, setActiveTopicIds] = useState<string[]>([]);
-  const [hiddenCohortIds, setHiddenCohortIds] = useState<string[]>([]);
+  // Radar Document Multi-Select (Default: only 1 document plotted, dynamic legend)
+  const [selectedRadarDocIds, setSelectedRadarDocIds] = useState<string[]>([]);
+
+  // User-Defined Custom Time-Series Builder & Global Time-Series Controls (Default: empty)
+  const [customTimeSeries, setCustomTimeSeries] = useState<CustomTimeSeriesDef[]>([]);
+  const [addingSeriesOpen, setAddingSeriesOpen] = useState<boolean>(false);
+  const [draftSeriesCohortId, setDraftSeriesCohortId] = useState<string>("");
+  const [draftSeriesTopicId, setDraftSeriesTopicId] = useState<string>("");
+  const [draftSeriesDateFrom, setDraftSeriesDateFrom] = useState<string>("");
+  const [draftSeriesDateTo, setDraftSeriesDateTo] = useState<string>("");
+  const [draftSeriesName, setDraftSeriesName] = useState<string>("");
+  const [editingSeriesId, setEditingSeriesId] = useState<string | null>(null);
+
+  // Global Time-Series Score & Normalization settings (acting strictly on defined series)
+  const [tsScoreMode, setTsScoreMode] = useState<TimeSeriesGlobalScoreMode>("sim_cosine");
+  const [tsNormEnabled, setTsNormEnabled] = useState<boolean>(false);
+  const [tsNormScope, setTsNormScope] = useState<TimeSeriesNormScope>("per_instance");
+  const [tsNormDimension, setTsNormDimension] = useState<TimeSeriesNormDimension>("value");
+  const [tsComparison, setTsComparison] = useState<CompareResponse | null>(null);
+  const [loadingTs, setLoadingTs] = useState<boolean>(false);
+  const tsChartRef = useRef<echarts.ECharts | null>(null);
+
+  // Exhaustive Basket Raw Chunks Table state (50-row preview + full CSV download)
+  const [basketChunksData, setBasketChunksData] = useState<BasketChunksResponse | null>(null);
+  const [loadingBasketChunks, setLoadingBasketChunks] = useState<boolean>(false);
+  const [exportingBasketCsv, setExportingBasketCsv] = useState<boolean>(false);
+
+  // Semantic zoom window
   const [zoomWindow, setZoomWindow] = useState<[number, number]>([0, 100]);
   const [showSplitsManual, setShowSplitsManual] = useState<boolean>(false);
 
@@ -348,14 +395,15 @@ export const ComparatorPage: React.FC = () => {
           if (cancelled) return;
           setComparison(res);
           setZoomWindow([0, 100]);
-          setHiddenCohortIds([]);
           setRadarTickIdx(0);
-          if (res.categories.length > 0) {
-            setActiveTopicIds((prev) => {
-              const validPrev = prev.filter((id) => res.categories.some((c) => c.id === id));
-              return validPrev.length > 0 ? validPrev : [res.categories[0].id];
-            });
-          }
+          const avail = (res.series || []).filter(
+            (s) => s.available && Array.isArray(s.partitions) && s.partitions.length > 0
+          );
+          setSelectedRadarDocIds((prev) => {
+            const validPrev = prev.filter((id) => avail.some((s) => s.document_id === id));
+            if (validPrev.length > 0) return validPrev;
+            return avail.length > 0 ? [avail[0].document_id] : [];
+          });
         })
         .catch((err) => {
           if (!cancelled) {
@@ -383,6 +431,94 @@ export const ComparatorPage: React.FC = () => {
     aggMethod,
   ]);
 
+  // Dedicated Time-Series un-normalized source fetch driven by Global Time-Series Score selector
+  const tsSourceAndMetric = useMemo<{
+    source: DataSourceMode;
+    metric: MetricTransform;
+  }>(() => {
+    if (tsScoreMode === "zero_shot") return { source: "zero_shot", metric: "cosine" };
+    if (tsScoreMode === "relevance") return { source: "relevance", metric: "cosine" };
+    if (tsScoreMode === "sim_softmax") return { source: "similarity", metric: "softmax" };
+    return { source: "similarity", metric: "cosine" };
+  }, [tsScoreMode]);
+
+  useEffect(() => {
+    if (basket.length === 0) {
+      setTsComparison(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setLoadingTs(true);
+      api
+        .compareDocuments({
+          documents: basket.map((d) => ({ doc_type: d.doc_type, meeting_date: d.meeting_date })),
+          n_partitions: effectiveNPartitions,
+          data_source: tsSourceAndMetric.source,
+          metric: tsSourceAndMetric.metric,
+          normalization: "none",
+          granularity,
+          macro_category: granularity === "subclass" ? macroCategory : null,
+          combine_by: groupingTree ? "tree" : "none",
+          agg_method: aggMethod,
+          grouping_tree: groupingTree,
+        })
+        .then((res) => {
+          if (!cancelled) setTsComparison(res);
+        })
+        .catch(() => {
+          if (!cancelled) setTsComparison(null);
+        })
+        .finally(() => {
+          if (!cancelled) setLoadingTs(false);
+        });
+    }, 150);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    basket,
+    effectiveNPartitions,
+    tsSourceAndMetric.source,
+    tsSourceAndMetric.metric,
+    granularity,
+    macroCategory,
+    groupingTree,
+    aggMethod,
+  ]);
+
+  // Fetch 50-row preview of exhaustive raw basket chunks and classifier scores
+  useEffect(() => {
+    if (basket.length === 0) {
+      setBasketChunksData(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setLoadingBasketChunks(true);
+      api
+        .getBasketChunks({
+          documents: basket.map((d) => ({ doc_type: d.doc_type, meeting_date: d.meeting_date })),
+          data_source: dataSource,
+          limit: 50,
+        })
+        .then((res) => {
+          if (!cancelled) setBasketChunksData(res);
+        })
+        .catch(() => {
+          if (!cancelled) setBasketChunksData(null);
+        })
+        .finally(() => {
+          if (!cancelled) setLoadingBasketChunks(false);
+        });
+    }, 180);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [basket, dataSource]);
+
   // Unified chronologically flattened timeline returned by backend (M meetings/periods x S slices)
   const resolvedTimeSeries = useMemo<{
     ticks: TimeTickMeta[];
@@ -405,24 +541,27 @@ export const ComparatorPage: React.FC = () => {
 
   const activeRadarTick = resolvedTimeSeries.ticks[safeRadarTickIdx] || null;
 
-  // 1. Fixed Radar Chart: displays EVERY selected document or group in Comparator.
-  // If > 10 items are selected, auto-groups by year and triggers an informative UI banner.
+  // Available Radar items (every valid document or tree leaf in comparison.series)
+  const availableRadarSeries = useMemo(() => {
+    if (!comparison) return [];
+    return (comparison.series || []).filter(
+      (s) => s.available && Array.isArray(s.partitions) && s.partitions.length > 0
+    );
+  }, [comparison]);
+
+  // 1. Interactive Multi-Select Radar Chart: plots ONLY the documents selected in selectedRadarDocIds (default: 1st document).
+  // Legend dynamically updates as documents are selected/deselected.
   const radarSummary = useMemo<{
     option: Record<string, unknown>;
-    autoGroupedByYear: boolean;
     originalCount: number;
     plottedCount: number;
   }>(() => {
-    if (!comparison || comparison.categories.length === 0) {
-      return { option: {}, autoGroupedByYear: false, originalCount: 0, plottedCount: 0 };
+    if (!comparison || comparison.categories.length === 0 || availableRadarSeries.length === 0) {
+      return { option: {}, originalCount: 0, plottedCount: 0 };
     }
 
-    const availableSeries = (comparison.series || []).filter(
-      (s) => s.available && Array.isArray(s.partitions) && s.partitions.length > 0
-    );
-    if (availableSeries.length === 0) {
-      return { option: {}, autoGroupedByYear: false, originalCount: 0, plottedCount: 0 };
-    }
+    const selectedSet = new Set(selectedRadarDocIds);
+    const chosenSeries = availableRadarSeries.filter((s) => selectedSet.has(s.document_id));
 
     const nCats = comparison.categories.length;
     const activeSliceNum = activeRadarTick?.slice_num || 1;
@@ -430,11 +569,13 @@ export const ComparatorPage: React.FC = () => {
     const activeMeetingDate = activeRadarTick?.meeting_date || "";
     const activePeriodLabel = activeRadarTick?.period_label || "";
     const sliceSuffix =
-      (activeRadarTick?.total_slices || nPartitions) > 1
-        ? ` · S${activeSliceNum}/${activeRadarTick?.total_slices || nPartitions}`
+      (activeRadarTick?.total_slices || effectiveNPartitions) > 1
+        ? ` · S${activeSliceNum}/${activeRadarTick?.total_slices || effectiveNPartitions}`
         : "";
 
-    const rawTraces = availableSeries.map((s) => {
+    const rawTraces = chosenSeries.map((s) => {
+      const globalIdx = availableRadarSeries.findIndex((a) => a.document_id === s.document_id);
+      const color = DOCUMENT_COLORS[Math.max(0, globalIdx) % DOCUMENT_COLORS.length];
       // Pick the partition matching the active chronological slice (fallback to closest partition)
       const targetPart =
         s.partitions.find((p) => p.partition_index === activeSliceNum) ||
@@ -450,7 +591,7 @@ export const ComparatorPage: React.FC = () => {
       const baseLabel = isTreeLeaf
         ? s.meeting_date
         : `${s.meeting_date} · ${s.doc_type_label || s.doc_type}`;
-      const label = `${baseLabel}${sliceSuffix}`;
+      const label = `${baseLabel}${sliceSuffix}::COLOR::${color}`;
       const yearMatch = String(s.meeting_date || "").match(/(19\d{2}|20\d{2})/);
       const yearKey = yearMatch ? yearMatch[1] : s.meeting_date || "Other";
       const isFocused =
@@ -459,86 +600,20 @@ export const ComparatorPage: React.FC = () => {
           s.meeting_date === activePeriodKey ||
           s.meeting_date === activePeriodLabel ||
           (isTreeLeaf && Boolean(activePeriodLabel) && s.meeting_date.includes(activePeriodLabel)));
+      const [cleanName, pickedColor] = label.split("::COLOR::");
       return {
-        label,
+        label: cleanName,
         yearKey,
         values: avgVals,
         isFocused,
+        color: pickedColor || DOCUMENT_COLORS[0],
       };
     });
 
-    const originalCount = rawTraces.length;
-    const autoGroupedByYear = originalCount > 10;
-    const activeYearStr = String(activeMeetingDate || activePeriodKey);
-    const activeYearKey = /^\d{4}/.test(activeYearStr) ? activeYearStr.slice(0, 4) : "";
-
-    let finalTraces: Array<{ name: string; value: number[]; isFocused: boolean }> = [];
-    if (autoGroupedByYear) {
-      const byYear = new Map<string, number[][]>();
-      for (const tr of rawTraces) {
-        const list = byYear.get(tr.yearKey) || [];
-        list.push(tr.values);
-        byYear.set(tr.yearKey, list);
-      }
-      const sortedYears = Array.from(byYear.keys()).sort();
-      finalTraces = sortedYears.map((yr) => {
-        const vecs = byYear.get(yr) || [];
-        const meanVec = new Array<number>(nCats).fill(0);
-        for (let c = 0; c < nCats; c++) {
-          let sum = 0;
-          for (const v of vecs) sum += v[c] ?? 0;
-          meanVec[c] = vecs.length > 0 ? sum / vecs.length : 0;
-        }
-        return {
-          name: `${yr} (${vecs.length} ${vecs.length === 1 ? "item" : "items"})${sliceSuffix}`,
-          value: meanVec,
-          isFocused: yr === activeYearKey,
-        };
-      });
-
-      const focusedRaw = rawTraces.filter((tr) => tr.isFocused);
-      if (focusedRaw.length > 0 && activeRadarTick) {
-        const pointVec = new Array<number>(nCats).fill(0);
-        for (let c = 0; c < nCats; c++) {
-          let sum = 0;
-          for (const f of focusedRaw) sum += f.values[c] ?? 0;
-          pointVec[c] = sum / focusedRaw.length;
-        }
-        finalTraces.unshift({
-          name: `Active: ${activeRadarTick.full_label}`,
-          value: pointVec,
-          isFocused: true,
-        });
-      } else if (activeRadarTick && resolvedTimeSeries.cohorts.length > 0) {
-        const pointVec = comparison.categories.map((_, catIdx) => {
-          let sum = 0;
-          let cnt = 0;
-          for (const coh of resolvedTimeSeries.cohorts) {
-            const v = coh.values_by_topic?.[catIdx]?.[safeRadarTickIdx];
-            if (typeof v === "number" && Number.isFinite(v)) {
-              sum += v;
-              cnt += 1;
-            }
-          }
-          return cnt > 0 ? sum / cnt : 0;
-        });
-        finalTraces.unshift({
-          name: `Active: ${activeRadarTick.full_label}`,
-          value: pointVec,
-          isFocused: true,
-        });
-      }
-    } else {
-      finalTraces = rawTraces.map((tr) => ({
-        name: tr.label,
-        value: tr.values,
-        isFocused: tr.isFocused,
-      }));
-    }
-
     let globalMax = 0.01;
     let globalMin = 0;
-    for (const s of availableSeries) {
+    const scaleSeries = chosenSeries.length > 0 ? chosenSeries : availableRadarSeries;
+    for (const s of scaleSeries) {
       for (const p of s.partitions) {
         for (const v of p.values || []) {
           if (typeof v === "number" && Number.isFinite(v)) {
@@ -548,19 +623,13 @@ export const ComparatorPage: React.FC = () => {
         }
       }
     }
-    const hasAnyFocused = finalTraces.some((tr) => tr.isFocused);
-    const plotted = finalTraces.map((tr, idx) => {
-      tr.value.forEach((v) => {
-        if (v > globalMax) globalMax = v;
-        if (v < globalMin) globalMin = v;
-      });
-      return {
-        name: tr.name,
-        value: tr.value,
-        isFocused: tr.isFocused,
-        color: DOCUMENT_COLORS[idx % DOCUMENT_COLORS.length],
-      };
-    });
+    const hasAnyFocused = rawTraces.some((tr) => tr.isFocused);
+    const plotted = rawTraces.map((tr) => ({
+      name: tr.label,
+      value: tr.values,
+      isFocused: tr.isFocused,
+      color: tr.color,
+    }));
 
     const axisMax = Number((globalMax * 1.1).toFixed(3));
     const axisMin = globalMin < 0 ? Number((globalMin * 1.1).toFixed(3)) : 0;
@@ -593,6 +662,7 @@ export const ComparatorPage: React.FC = () => {
         orient: "horizontal",
         left: "center",
         itemGap: 12,
+        data: plotted.map((s) => s.name),
         textStyle: { fontFamily: "JetBrains Mono", fontSize: 11 },
       },
       radar: {
@@ -616,17 +686,17 @@ export const ComparatorPage: React.FC = () => {
           data: plotted.map((s) => ({
             name: s.name,
             value: s.value,
-            symbolSize: s.isFocused ? 7 : 4,
+            symbolSize: s.isFocused ? 7 : 5,
             z: s.isFocused ? 10 : 2,
             itemStyle: { color: s.color },
             lineStyle: {
               color: s.color,
-              width: s.isFocused ? 3.2 : hasAnyFocused ? 1.6 : 2.2,
-              opacity: s.isFocused ? 1 : hasAnyFocused ? 0.65 : 0.9,
+              width: s.isFocused ? 3.2 : hasAnyFocused ? 1.8 : 2.4,
+              opacity: s.isFocused ? 1 : 0.9,
             },
             areaStyle: {
               color: s.color,
-              opacity: s.isFocused ? 0.24 : hasAnyFocused ? 0.06 : 0.1,
+              opacity: s.isFocused ? 0.24 : 0.14,
             },
           })),
         },
@@ -635,18 +705,40 @@ export const ComparatorPage: React.FC = () => {
 
     return {
       option,
-      autoGroupedByYear,
-      originalCount,
+      originalCount: availableRadarSeries.length,
       plottedCount: plotted.length,
     };
-  }, [comparison, isDark, activeRadarTick, resolvedTimeSeries.cohorts, safeRadarTickIdx, nPartitions]);
+  }, [
+    comparison,
+    availableRadarSeries,
+    selectedRadarDocIds,
+    isDark,
+    activeRadarTick,
+    effectiveNPartitions,
+  ]);
+
+  // Active dataset for Time-Series (driven by tsComparison so Global Score selector works independently)
+  const activeTsComparison = tsComparison || comparison;
+
+  const tsResolvedTimeSeries = useMemo<{
+    ticks: TimeTickMeta[];
+    cohorts: OrderedTimeSeriesCohort[];
+  }>(() => {
+    if (!activeTsComparison || activeTsComparison.categories.length === 0) {
+      return { ticks: [], cohorts: [] };
+    }
+    return {
+      ticks: activeTsComparison.time_ticks || [],
+      cohorts: activeTsComparison.ordered_series || [],
+    };
+  }, [activeTsComparison]);
 
   // Compute Meeting-Averaged Timeline (used by default when Splits are NOT expanded)
   const averagedTimeSeries = useMemo<{
     ticks: TimeTickMeta[];
     cohorts: OrderedTimeSeriesCohort[];
   }>(() => {
-    const { ticks, cohorts } = resolvedTimeSeries;
+    const { ticks, cohorts } = tsResolvedTimeSeries;
     if (ticks.length === 0 || cohorts.length === 0) return { ticks: [], cohorts: [] };
 
     const periodOrder: string[] = [];
@@ -722,11 +814,11 @@ export const ComparatorPage: React.FC = () => {
     });
 
     return { ticks: avgTicks, cohorts: avgCohorts };
-  }, [resolvedTimeSeries]);
+  }, [tsResolvedTimeSeries]);
 
   const hasMultipleSplits = useMemo(
-    () => nPartitions > 1 && resolvedTimeSeries.ticks.some((t) => t.total_slices > 1),
-    [nPartitions, resolvedTimeSeries.ticks]
+    () => effectiveNPartitions > 1 && tsResolvedTimeSeries.ticks.some((t) => t.total_slices > 1),
+    [effectiveNPartitions, tsResolvedTimeSeries.ticks]
   );
 
   // Determine semantic zoom granularity & whether atomic meeting scale has been reached
@@ -756,17 +848,159 @@ export const ComparatorPage: React.FC = () => {
 
   // Active dataset displayed on the Time-Series chart (averaged by meeting OR expanded splits)
   const displayedTimeSeries = useMemo(
-    () => (splitsVisible ? resolvedTimeSeries : averagedTimeSeries),
-    [splitsVisible, resolvedTimeSeries, averagedTimeSeries]
+    () => (splitsVisible ? tsResolvedTimeSeries : averagedTimeSeries),
+    [splitsVisible, tsResolvedTimeSeries, averagedTimeSeries]
   );
 
-  // 2. Chronologically Flattened Time-Series Option with Semantic Zoom, Splits Toggle & Meeting Visual Regions
-  const timeSeriesOption = useMemo(() => {
-    const { ticks, cohorts } = displayedTimeSeries;
-    if (!comparison || ticks.length === 0 || cohorts.length === 0) return {};
+  // Keep draft builder selectors initialized to first available cohort and topic
+  useEffect(() => {
+    if (displayedTimeSeries.cohorts.length > 0) {
+      setDraftSeriesCohortId((prev) =>
+        displayedTimeSeries.cohorts.some((c) => c.cohort_id === prev)
+          ? prev
+          : displayedTimeSeries.cohorts[0].cohort_id
+      );
+    }
+    if (activeTsComparison && activeTsComparison.categories.length > 0) {
+      setDraftSeriesTopicId((prev) =>
+        activeTsComparison.categories.some((c) => c.id === prev)
+          ? prev
+          : activeTsComparison.categories[0].id
+      );
+    }
+  }, [displayedTimeSeries.cohorts, activeTsComparison]);
 
-    const visibleCohorts = cohorts.filter((c) => !hiddenCohortIds.includes(c.cohort_id));
-    const activeTopicSet = new Set(activeTopicIds);
+  // Compute raw & normalized values for each user-defined time series in customTimeSeries
+  const computedCustomSeries = useMemo(() => {
+    const { ticks, cohorts } = displayedTimeSeries;
+    if (!activeTsComparison || ticks.length === 0 || cohorts.length === 0 || customTimeSeries.length === 0) {
+      return [];
+    }
+
+    // 1. Extract raw vector for each defined series, masked by its optional date range [dateFrom..dateTo]
+    const rawItems = customTimeSeries.map((def, sIdx) => {
+      const cohort =
+        cohorts.find((c) => c.cohort_id === def.cohortId) ||
+        cohorts.find((c) => c.label === def.cohortId) ||
+        cohorts[0];
+      const catIdx = activeTsComparison.categories.findIndex((c) => c.id === def.topicId);
+      const effCatIdx = catIdx >= 0 ? catIdx : 0;
+      const catObj = activeTsComparison.categories[effCatIdx];
+
+      const rawValues: (number | null)[] = ticks.map((tk, tIdx) => {
+        const mDate = tk.meeting_date || tk.period_key;
+        if (def.dateFrom && mDate < def.dateFrom) return null;
+        if (def.dateTo && mDate > def.dateTo) return null;
+        const v = cohort?.values_by_topic?.[effCatIdx]?.[tIdx];
+        return typeof v === "number" && Number.isFinite(v) ? v : null;
+      });
+
+      return {
+        def,
+        color: DOCUMENT_COLORS[sIdx % DOCUMENT_COLORS.length],
+        cohortId: cohort?.cohort_id || def.cohortId,
+        cohortLabel: cohort?.label || def.cohortId,
+        topicId: catObj?.id || def.topicId,
+        topicLabel: catObj?.label || def.topicId,
+        rawValues,
+      };
+    });
+
+    if (!tsNormEnabled) {
+      return rawItems.map((it) => ({ ...it, values: it.rawValues }));
+    }
+
+    // 2. Apply Normalization strictly across the selected/defined series:
+    //    Scope: "per_instance" (each series independently) vs "global" (across all selected series)
+    //    Dimension: "value" (min-max value scaling) vs "time" (temporal share / cross-time scaling)
+    const eps = 1e-8;
+    if (tsNormDimension === "value") {
+      if (tsNormScope === "per_instance") {
+        return rawItems.map((it) => {
+          const valid = it.rawValues.filter((v): v is number => v !== null);
+          if (valid.length === 0) return { ...it, values: it.rawValues };
+          const sMin = Math.min(...valid);
+          const sMax = Math.max(...valid);
+          const span = sMax - sMin;
+          const values = it.rawValues.map((v) =>
+            v === null ? null : span > eps ? (v - sMin) / span : 0
+          );
+          return { ...it, values };
+        });
+      } else {
+        // Global value min-max across ALL selected series
+        const allValid: number[] = [];
+        for (const it of rawItems) {
+          for (const v of it.rawValues) {
+            if (v !== null) allValid.push(v);
+          }
+        }
+        const gMin = allValid.length > 0 ? Math.min(...allValid) : 0;
+        const gMax = allValid.length > 0 ? Math.max(...allValid) : 1;
+        const span = gMax - gMin;
+        return rawItems.map((it) => ({
+          ...it,
+          values: it.rawValues.map((v) =>
+            v === null ? null : span > eps ? (v - gMin) / span : 0
+          ),
+        }));
+      }
+    } else {
+      // Dimension == "time"
+      if (tsNormScope === "per_instance") {
+        // Each series normalized along its own time trajectory (sum of magnitudes = 1)
+        return rawItems.map((it) => {
+          const sumAbs = it.rawValues.reduce<number>(
+            (acc, v) => acc + (v !== null ? Math.abs(v) : 0),
+            0
+          );
+          return {
+            ...it,
+            values: it.rawValues.map((v) =>
+              v === null ? null : sumAbs > eps ? v / sumAbs : 0
+            ),
+          };
+        });
+      } else {
+        // Global across selected series at each time point t (min-max across selected series at tick t, or share if 2+)
+        const nTicks = ticks.length;
+        const normBySeries: (number | null)[][] = rawItems.map((it) => [...it.rawValues]);
+        for (let t = 0; t < nTicks; t++) {
+          const sliceVals = rawItems
+            .map((it) => it.rawValues[t])
+            .filter((v): v is number => v !== null);
+          if (sliceVals.length === 0) continue;
+          const tMin = Math.min(...sliceVals);
+          const tMax = Math.max(...sliceVals);
+          const span = tMax - tMin;
+          const sumAbs = sliceVals.reduce((a, b) => a + Math.abs(b), 0);
+          for (let s = 0; s < rawItems.length; s++) {
+            const v = rawItems[s].rawValues[t];
+            if (v === null) {
+              normBySeries[s][t] = null;
+            } else if (span > eps) {
+              normBySeries[s][t] = (v - tMin) / span;
+            } else {
+              normBySeries[s][t] = sumAbs > eps ? v / sumAbs : 0;
+            }
+          }
+        }
+        return rawItems.map((it, s) => ({ ...it, values: normBySeries[s] }));
+      }
+    }
+  }, [
+    displayedTimeSeries,
+    activeTsComparison,
+    customTimeSeries,
+    tsNormEnabled,
+    tsNormScope,
+    tsNormDimension,
+  ]);
+
+  // 2. Chronologically Flattened Time-Series Option rendering ONLY user-defined customTimeSeries
+  const timeSeriesOption = useMemo(() => {
+    const { ticks } = displayedTimeSeries;
+    if (!activeTsComparison || ticks.length === 0 || computedCustomSeries.length === 0) return {};
 
     const xAxisLabels = ticks.map((t, idx) => {
       if (splitsVisible) {
@@ -785,7 +1019,6 @@ S${t.slice_num}`;
       return t.period_label;
     });
 
-    // Visual meeting regions (alternating shaded bands + vertical delimiters) when splits are displayed
     const periodDividers: Array<{ xAxis: number }> = [];
     const meetingRegions: Array<
       [
@@ -838,64 +1071,52 @@ S${t.slice_num}`;
       }
     }
 
-    const seriesLines: Record<string, unknown>[] = [];
-    let colorIdx = 0;
-
-    comparison.categories.forEach((cat, catIdx) => {
-      if (!activeTopicSet.has(cat.id)) return;
-      visibleCohorts.forEach((cohort) => {
-        const seriesName = `${cohort.label} · ${cat.label}`;
-        const color = DOCUMENT_COLORS[colorIdx % DOCUMENT_COLORS.length];
-        colorIdx += 1;
-
-        const isFirstSeries = seriesLines.length === 0;
-        seriesLines.push({
-          name: seriesName,
-          type: "line",
-          smooth: false,
-          connectNulls: true,
-          symbol: "circle",
-          symbolSize: ticks.length > 80 ? 3 : 5,
-          itemStyle: { color },
-          lineStyle: { width: 2, color },
-          emphasis: {
-            focus: "series",
-            lineStyle: { width: 3.5 },
-            itemStyle: { borderWidth: 2, borderColor: "#09090B" },
-          },
-          blur: {
-            lineStyle: { opacity: 0.14 },
-            itemStyle: { opacity: 0.14 },
-          },
-          ...(isFirstSeries && splitsVisible
-            ? {
-                markLine: {
-                  silent: true,
-                  symbol: ["none", "none"],
-                  label: { show: false },
-                  lineStyle: {
-                    color: isDark ? "#475569" : "#94A3B8",
-                    type: "dashed",
-                    width: 1.2,
-                  },
-                  data: periodDividers,
-                },
-                markArea: {
-                  silent: true,
-                  data: meetingRegions,
-                },
-              }
-            : {}),
-          data: cohort.values_by_topic[catIdx].map((val, tIdx) => ({
-            value: val,
-            _cohortId: cohort.cohort_id,
-            _cohortLabel: cohort.label,
-            _topicLabel: cat.label,
-            _tickIndex: tIdx,
-          })),
-        });
-      });
-    });
+    const seriesLines: Record<string, unknown>[] = computedCustomSeries.map((cs, idx) => ({
+      name: cs.def.name,
+      type: "line",
+      smooth: false,
+      connectNulls: true,
+      symbol: "circle",
+      symbolSize: ticks.length > 80 ? 3 : 5,
+      itemStyle: { color: cs.color },
+      lineStyle: { width: 2.2, color: cs.color },
+      emphasis: {
+        focus: "series",
+        lineStyle: { width: 3.5 },
+        itemStyle: { borderWidth: 2, borderColor: "#09090B" },
+      },
+      blur: {
+        lineStyle: { opacity: 0.14 },
+        itemStyle: { opacity: 0.14 },
+      },
+      ...(idx === 0 && splitsVisible
+        ? {
+            markLine: {
+              silent: true,
+              symbol: ["none", "none"],
+              label: { show: false },
+              lineStyle: {
+                color: isDark ? "#475569" : "#94A3B8",
+                type: "dashed",
+                width: 1.2,
+              },
+              data: periodDividers,
+            },
+            markArea: {
+              silent: true,
+              data: meetingRegions,
+            },
+          }
+        : {}),
+      data: cs.values.map((val, tIdx) => ({
+        value: val,
+        _cohortId: cs.cohortId,
+        _cohortLabel: cs.cohortLabel,
+        _topicLabel: cs.topicLabel,
+        _seriesName: cs.def.name,
+        _tickIndex: tIdx,
+      })),
+    }));
 
     return {
       tooltip: {
@@ -907,6 +1128,7 @@ S${t.slice_num}`;
           data?: {
             _cohortLabel?: string;
             _topicLabel?: string;
+            _seriesName?: string;
             _tickIndex?: number;
           };
         }) => {
@@ -920,8 +1142,9 @@ S${t.slice_num}`;
           return `<div style="font-family:JetBrains Mono,monospace;font-size:11px;min-width:230px;">
             <div style="font-weight:700;margin-bottom:4px;border-bottom:1px solid #E4E4E7;padding-bottom:3px;">
               <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${p.color};margin-right:6px;"></span>
-              ${p.data?._cohortLabel || p.seriesName}
+              ${p.data?._seriesName || p.seriesName}
             </div>
+            <div>Doc Type / Group: <strong>${p.data?._cohortLabel || ""}</strong></div>
             <div>Topic: <strong>${p.data?._topicLabel || ""}</strong></div>
             <div>Timeline: <strong>${hierarchy}</strong></div>
             <div>Value: <strong>${formatSigFigs(Number(p.value), 3)}</strong></div>
@@ -929,7 +1152,12 @@ S${t.slice_num}`;
           </div>`;
         },
       },
-      grid: { top: splitsVisible ? 30 : 20, left: 54, right: 24, bottom: splitsVisible ? 86 : 72 },
+      legend: {
+        top: 0,
+        type: "scroll",
+        textStyle: { fontFamily: "JetBrains Mono", fontSize: 11 },
+      },
+      grid: { top: splitsVisible ? 38 : 32, left: 54, right: 24, bottom: splitsVisible ? 86 : 72 },
       xAxis: {
         type: "category",
         data: xAxisLabels,
@@ -973,10 +1201,9 @@ S${t.slice_num}`;
       series: seriesLines,
     };
   }, [
-    comparison,
+    activeTsComparison,
     displayedTimeSeries,
-    activeTopicIds,
-    hiddenCohortIds,
+    computedCustomSeries,
     zoomGranularity,
     splitsVisible,
     zoomWindow,
@@ -1026,82 +1253,167 @@ S${t.slice_num}`;
     });
   };
 
-  // Full Chronological CSV Export (All Cohorts, All Meetings/Periods, All Slices 1..S, Full Precision)
-  const handleExportCsv = () => {
-    if (!comparison || comparison.categories.length === 0 || resolvedTimeSeries.ticks.length === 0) {
-      return;
-    }
-    const esc = (val: string | number) => {
-      const s = String(val);
+  // Export user-defined Time-Series data to CSV
+  const handleExportCustomSeriesCsv = () => {
+    const { ticks } = displayedTimeSeries;
+    if (ticks.length === 0 || computedCustomSeries.length === 0) return;
+    const esc = (val: string | number | null | undefined) => {
+      const s = val === null || val === undefined ? "" : String(val);
       return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-
-    const categories = comparison.categories;
-    const ticks = resolvedTimeSeries.ticks;
-    const sortedCohorts = [...resolvedTimeSeries.cohorts].sort((a, b) =>
-      a.label.localeCompare(b.label)
-    );
-    const indexedTicks = ticks
-      .map((tk, idx) => ({ tk, idx }))
-      .sort((a, b) => {
-        if (a.tk.year !== b.tk.year) return a.tk.year - b.tk.year;
-        const pCmp = a.tk.period_key.localeCompare(b.tk.period_key);
-        if (pCmp !== 0) return pCmp;
-        return a.tk.slice_index - b.tk.slice_index;
-      });
-
     const headers = [
-      "cohort",
       "year",
-      "period_or_date",
-      "slice_index",
+      "meeting_date",
+      "period_label",
+      "slice_num",
       "total_slices",
-      "doc_count",
-      "chunk_count",
-      "metric_transform",
-      "normalization",
-      ...categories.map((c) => c.id),
+      "score_mode",
+      "normalized",
+      "norm_scope",
+      "norm_dimension",
+      ...computedCustomSeries.map((cs) => cs.def.name),
     ];
-
-    const lines: string[] = [headers.map(esc).join(",")];
-
-    for (const cohort of sortedCohorts) {
-      for (const { tk, idx } of indexedTicks) {
-        const scores = categories.map((_, cIdx) => {
-          const v = cohort.values_by_topic[cIdx]?.[idx];
-          return typeof v === "number" && Number.isFinite(v) ? v : null;
-        });
-        if (scores.every((v) => v === null)) continue;
-
-        const meta = cohort.tick_meta[idx];
-        const docCount = meta?.doc_count ?? meta?.documents?.length ?? 0;
-        const chunkCount = meta?.chunk_count ?? 0;
-        const periodOrDate = tk.period_key || tk.meeting_date || tk.period_label;
-
-        const row: (string | number)[] = [
-          cohort.label,
+    const lines = [headers.map(esc).join(",")];
+    ticks.forEach((tk, tIdx) => {
+      const vals = computedCustomSeries.map((cs) => cs.values[tIdx]);
+      if (vals.every((v) => v === null || v === undefined)) return;
+      lines.push(
+        [
           tk.year,
-          periodOrDate,
-          tk.slice_index,
+          tk.meeting_date,
+          tk.period_label,
+          tk.slice_num,
           tk.total_slices,
-          docCount,
-          chunkCount,
-          comparison.metric,
-          comparison.normalization,
-          ...scores.map((v) => (v === null ? "" : String(v))),
-        ];
-        lines.push(row.map(esc).join(","));
-      }
-    }
-
-    const csvContent = lines.join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+          tsScoreMode,
+          tsNormEnabled ? "true" : "false",
+          tsNormEnabled ? tsNormScope : "none",
+          tsNormEnabled ? tsNormDimension : "none",
+          ...vals.map((v) => (v === null || v === undefined ? "" : String(v))),
+        ]
+          .map(esc)
+          .join(",")
+      );
+    });
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `miningfomc_chronological_${comparison.metric}_${comparison.normalization}.csv`;
+    a.download = `miningfomc_timeseries_${tsScoreMode}.csv`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  // Export Time-Series ECharts canvas as PNG
+  const handleExportTimeSeriesPng = () => {
+    if (!tsChartRef.current) return;
+    const dataUrl = tsChartRef.current.getDataURL({
+      type: "png",
+      pixelRatio: 2,
+      backgroundColor: isDark ? "#0F172A" : "#FFFFFF",
+    });
+    const a = document.createElement("a");
+    a.href = dataUrl;
+    a.download = `miningfomc_timeseries_${tsScoreMode}.png`;
+    a.click();
+  };
+
+  // Export full raw basket chunks table to CSV
+  const handleExportBasketChunksCsv = async () => {
+    if (basket.length === 0) return;
+    setExportingBasketCsv(true);
+    try {
+      const csvText = await api.exportBasketChunksCsv({
+        documents: basket.map((d) => ({ doc_type: d.doc_type, meeting_date: d.meeting_date })),
+        data_source: dataSource,
+      });
+      const blob = new Blob([csvText], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `miningfomc_basket_raw_chunks_${dataSource}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to export basket chunks CSV");
+    } finally {
+      setExportingBasketCsv(false);
+    }
+  };
+
+  // Handlers for Custom Time-Series creation, editing, duplication, and deletion
+  const handleCreateCustomSeries = () => {
+    if (!activeTsComparison || displayedTimeSeries.cohorts.length === 0) return;
+    const cohort =
+      displayedTimeSeries.cohorts.find((c) => c.cohort_id === draftSeriesCohortId) ||
+      displayedTimeSeries.cohorts[0];
+    const cat =
+      activeTsComparison.categories.find((c) => c.id === draftSeriesTopicId) ||
+      activeTsComparison.categories[0];
+    if (!cohort || !cat) return;
+
+    const dateSuffix =
+      draftSeriesDateFrom || draftSeriesDateTo
+        ? ` (${draftSeriesDateFrom || "1976"}..${draftSeriesDateTo || "2020"})`
+        : "";
+    const autoName = `${cohort.label} · ${cat.label}${dateSuffix}`;
+    const finalName = draftSeriesName.trim() || autoName;
+    const newItem: CustomTimeSeriesDef = {
+      id: `ts_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      name: finalName,
+      cohortId: cohort.cohort_id,
+      topicId: cat.id,
+      dateFrom: draftSeriesDateFrom,
+      dateTo: draftSeriesDateTo,
+    };
+    setCustomTimeSeries((prev) => [...prev, newItem]);
+    setDraftSeriesName("");
+    setAddingSeriesOpen(false);
+  };
+
+  const handleUpdateCustomSeries = (id: string, patch: Partial<CustomTimeSeriesDef>) => {
+    setCustomTimeSeries((prev) =>
+      prev.map((item) => {
+        if (item.id !== id) return item;
+        const updated = { ...item, ...patch };
+        // If cohortId or topicId changed and name wasn't manually overridden in this patch, refresh default name
+        if ((patch.cohortId || patch.topicId) && patch.name === undefined && activeTsComparison) {
+          const coh = displayedTimeSeries.cohorts.find((c) => c.cohort_id === updated.cohortId);
+          const cat = activeTsComparison.categories.find((c) => c.id === updated.topicId);
+          if (coh && cat) {
+            const dateSuffix =
+              updated.dateFrom || updated.dateTo
+                ? ` (${updated.dateFrom || "1976"}..${updated.dateTo || "2020"})`
+                : "";
+            updated.name = `${coh.label} · ${cat.label}${dateSuffix}`;
+          }
+        }
+        return updated;
+      })
+    );
+  };
+
+  const handleDuplicateCustomSeries = (item: CustomTimeSeriesDef) => {
+    const copyItem: CustomTimeSeriesDef = {
+      ...item,
+      id: `ts_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      name: `${item.name} (Copy)`,
+    };
+    setCustomTimeSeries((prev) => [...prev, copyItem]);
+    setEditingSeriesId(copyItem.id);
+  };
+
+  const handleDeleteCustomSeries = (id: string) => {
+    setCustomTimeSeries((prev) => prev.filter((item) => item.id !== id));
+    if (editingSeriesId === id) setEditingSeriesId(null);
+  };
+
+  const toggleRadarDocSelection = (docId: string) => {
+    setSelectedRadarDocIds((prev) => {
+      if (prev.includes(docId)) {
+        return prev.length > 1 ? prev.filter((id) => id !== docId) : prev;
+      }
+      return [...prev, docId];
+    });
   };
 
   // Current snapshot config for Save / Fork Study
@@ -1171,17 +1483,17 @@ S${t.slice_num}`;
     }
   };
 
-  const toggleTopic = (topicId: string) => {
-    setActiveTopicIds((prev) =>
-      prev.includes(topicId) ? prev.filter((id) => id !== topicId) : [...prev, topicId]
-    );
-  };
-
-  const toggleCohort = (cohortId: string) => {
-    setHiddenCohortIds((prev) =>
-      prev.includes(cohortId) ? prev.filter((id) => id !== cohortId) : [...prev, cohortId]
-    );
-  };
+  const serverBlockingMessage = loading
+    ? "Computing comparison & standardized partitions on server..."
+    : loadingTs
+    ? "Computing time-series score matrices on server..."
+    : addingAll
+    ? "Loading all matching documents into comparison basket..."
+    : exportingBasketCsv
+    ? "Generating full raw chunk classifier CSV on server..."
+    : loadingBasketChunks && !basketChunksData
+    ? "Loading raw chunk classifier scores from server..."
+    : null;
 
   const nodeSplitsCount = Object.keys(groupingTree?.node_splits || {}).length;
   const treeSummaryLabel = groupingTree
@@ -1206,7 +1518,27 @@ S${t.slice_num}`;
     : "MESO · MEETING AVERAGES";
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 relative">
+      {/* Full-Page Blocking Overlay with Blur while Server is Computing */}
+      {serverBlockingMessage && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed inset-0 z-50 bg-canvas/60 backdrop-blur-sm flex items-center justify-center p-4 cursor-wait select-none"
+        >
+          <div className="panel bg-surface border-accent px-6 py-4 shadow-2xl max-w-md w-full flex items-center gap-3.5">
+            <div className="w-5 h-5 rounded-full border-2 border-accent border-t-transparent animate-spin shrink-0" />
+            <div className="min-w-0">
+              <div className="text-xs font-mono uppercase tracking-wider font-semibold text-accent-dark">
+                Server Computing · Please Wait
+              </div>
+              <div className="text-xs font-mono text-ink mt-0.5 truncate">
+                {serverBlockingMessage}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-4 border-b border-border pb-4">
         <div>
@@ -1840,13 +2172,8 @@ S${t.slice_num}`;
             </div>
           )}
 
-          {/* Synchronized Interactive Radar Chart */}
-          <div className="panel p-4 relative">
-            {loading && comparison && (
-              <div className="absolute top-3 right-3 z-10 px-2.5 py-1 rounded-sm bg-surface-alt/90 border border-border text-[10px] font-mono text-muted">
-                Updating partitions...
-              </div>
-            )}
+          {/* Synchronized Interactive Radar Chart with Multi-Select Document Selector (Default: 1 Document) */}
+          <div className="panel p-4 relative space-y-3">
             {basket.length === 0 ? (
               <div className="h-[420px] flex flex-col items-center justify-center text-center p-6">
                 <p className="text-sm font-medium text-ink">No documents in comparison basket</p>
@@ -1859,19 +2186,69 @@ S${t.slice_num}`;
               <div className="h-[420px] flex items-center justify-center text-xs font-mono text-muted">
                 Computing chronological N-partition comparison...
               </div>
-            ) : comparison && comparison.categories.length > 0 ? (
+            ) : comparison && comparison.categories.length > 0 && availableRadarSeries.length > 0 ? (
               <div className="space-y-3">
-                {radarSummary.autoGroupedByYear && (
-                  <div className="px-3.5 py-2.5 border border-amber-400/70 bg-amber-50 dark:bg-amber-950/40 rounded-sm flex items-start gap-2.5 text-xs text-amber-900 dark:text-amber-200">
-                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
-                    <div>
-                      <strong className="font-semibold">Automatic Yearly Grouping Applied:</strong>{" "}
-                      {radarSummary.originalCount} selected items exceed the 10-trace visual
-                      clarity limit. Traces were automatically aggregated by year into{" "}
-                      {radarSummary.plottedCount} yearly averages for readability.
+                {/* Radar Document Selector */}
+                <div className="border border-border rounded-sm bg-canvas/70 p-3 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[11px] font-mono uppercase font-semibold text-ink">
+                      Radar Plot Documents ({selectedRadarDocIds.length} / {availableRadarSeries.length} selected)
+                    </span>
+                    <div className="flex items-center gap-2 text-[11px] font-mono">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSelectedRadarDocIds(
+                            availableRadarSeries.length > 0
+                              ? [availableRadarSeries[0].document_id]
+                              : []
+                          )
+                        }
+                        className="underline text-muted hover:text-ink"
+                      >
+                        1st Document Only
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSelectedRadarDocIds(availableRadarSeries.map((s) => s.document_id))
+                        }
+                        className="underline text-muted hover:text-ink"
+                      >
+                        Select All ({availableRadarSeries.length})
+                      </button>
                     </div>
                   </div>
-                )}
+                  <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto pr-1">
+                    {availableRadarSeries.map((s, idx) => {
+                      const active = selectedRadarDocIds.includes(s.document_id);
+                      const color = DOCUMENT_COLORS[idx % DOCUMENT_COLORS.length];
+                      const lbl =
+                        s.doc_type === "tree_leaf"
+                          ? s.meeting_date
+                          : `${s.meeting_date} · ${s.doc_type_label || s.doc_type}`;
+                      return (
+                        <button
+                          key={s.document_id}
+                          type="button"
+                          onClick={() => toggleRadarDocSelection(s.document_id)}
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-mono rounded-sm border transition-colors ${
+                            active
+                              ? "bg-ink text-white border-ink shadow-sm"
+                              : "bg-surface text-muted border-border hover:border-ink hover:text-ink"
+                          }`}
+                        >
+                          <span
+                            className="w-2 h-2 rounded-full shrink-0"
+                            style={{ backgroundColor: color }}
+                          />
+                          <span>{lbl}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 <EChartBox option={radarSummary.option} className="w-full h-[460px]" />
               </div>
             ) : (
@@ -1881,24 +2258,45 @@ S${t.slice_num}`;
             )}
           </div>
 
-          {/* Chronologically Flattened Time-Series Chart with 3-Level Semantic Zoom & Anti-Clutter Toggles */}
-          {comparison &&
-            comparison.categories.length > 0 &&
-            resolvedTimeSeries.ticks.length > 0 && (
-              <div className="panel p-4 space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
+          {/* User-Defined Time-Series Builder, Global Normalization/Score Controls & Chart */}
+          {activeTsComparison &&
+            activeTsComparison.categories.length > 0 &&
+            tsResolvedTimeSeries.ticks.length > 0 && (
+              <div className="panel p-4 space-y-4">
+                {/* Header & Export Buttons */}
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3">
                   <div>
                     <h3 className="text-xs font-mono uppercase tracking-wider font-semibold text-ink">
-                      Chronological Time-Series ({displayedTimeSeries.ticks.length} points
-                      · <span className="text-accent-dark">{zoomBadgeLabel}</span>)
+                      Custom Chronological Time-Series ({customTimeSeries.length}{" "}
+                      {customTimeSeries.length === 1 ? "series" : "series"} defined ·{" "}
+                      <span className="text-accent-dark">{zoomBadgeLabel}</span>)
                     </h3>
                     <p className="text-[11px] font-mono text-muted">
-                      {splitsVisible
-                        ? "Shaded X-axis bands demarcate individual meetings to separate intra-meeting splits from inter-meeting gaps."
-                        : "Showing meeting averages by default · Zoom into a meeting or toggle Show Splits to inspect intra-meeting splits."}
+                      Build custom time series by Document Type, Topic, and Date Range. Click any
+                      defined series name to edit, duplicate, or delete it.
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={computedCustomSeries.length === 0}
+                      onClick={handleExportCustomSeriesCsv}
+                      title="Download plotted time-series data as CSV"
+                      className="btn-secondary py-1 px-2.5 text-xs"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      Download CSV
+                    </button>
+                    <button
+                      type="button"
+                      disabled={computedCustomSeries.length === 0}
+                      onClick={handleExportTimeSeriesPng}
+                      title="Download time-series chart as PNG image"
+                      className="btn-secondary py-1 px-2.5 text-xs"
+                    >
+                      <ImageIcon className="w-3.5 h-3.5" />
+                      Download PNG
+                    </button>
                     {hasMultipleSplits && (
                       <button
                         type="button"
@@ -1942,133 +2340,488 @@ S${t.slice_num}`;
                   </div>
                 </div>
 
-                {/* Anti-Clutter Topic Pills (1 primary topic active by default) */}
-                <div className="space-y-1.5 pt-2 border-t border-border">
-                  <div className="flex items-center justify-between text-[10px] font-mono uppercase text-muted">
-                    <span>Topics ({activeTopicIds.length} active)</span>
-                    <div className="flex items-center gap-2">
+                {/* Global Time-Series Controls: Score Mode & Selected-Series Normalization */}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 p-3 border border-border rounded-sm bg-canvas/60">
+                  <div>
+                    <label className="block text-[10px] font-mono uppercase text-muted mb-1">
+                      Global Score Source
+                    </label>
+                    <select
+                      value={tsScoreMode}
+                      onChange={(e) =>
+                        setTsScoreMode(e.target.value as TimeSeriesGlobalScoreMode)
+                      }
+                      className="input-field py-1.5 text-xs font-mono"
+                    >
+                      <option value="zero_shot">Zero-Shot Probabilities</option>
+                      <option value="sim_softmax">Similarity · Softmax</option>
+                      <option value="sim_cosine">Similarity · Cosine</option>
+                      <option value="sim_none">Similarity · None (Raw)</option>
+                      <option value="relevance">Relevance Probabilities</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-mono uppercase text-muted mb-1">
+                      Normalize Selected Series
+                    </label>
+                    <div className="flex border border-border rounded-sm overflow-hidden bg-surface">
                       <button
                         type="button"
-                        onClick={() => setActiveTopicIds([comparison.categories[0].id])}
-                        className="underline hover:text-ink"
+                        onClick={() => setTsNormEnabled(false)}
+                        className={`flex-1 py-1.5 text-xs font-mono ${
+                          !tsNormEnabled
+                            ? "bg-ink text-white"
+                            : "text-zinc-600 hover:bg-zinc-100"
+                        }`}
                       >
-                        1 Topic
+                        Off (Raw)
                       </button>
                       <button
                         type="button"
-                        onClick={() => setActiveTopicIds(comparison.categories.map((c) => c.id))}
-                        className="underline hover:text-ink"
+                        onClick={() => setTsNormEnabled(true)}
+                        className={`flex-1 py-1.5 text-xs font-mono ${
+                          tsNormEnabled
+                            ? "bg-ink text-white"
+                            : "text-zinc-600 hover:bg-zinc-100"
+                        }`}
                       >
-                        All Topics
+                        Normalize On
                       </button>
                     </div>
                   </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {comparison.categories.map((cat) => {
-                      const active = activeTopicIds.includes(cat.id);
-                      return (
-                        <button
-                          key={cat.id}
-                          type="button"
-                          onClick={() => toggleTopic(cat.id)}
-                          className={`px-2 py-0.5 text-[11px] font-mono rounded-sm border transition-colors ${
-                            active
-                              ? "bg-ink text-white border-ink"
-                              : "bg-surface text-muted border-border hover:border-ink"
-                          }`}
-                        >
-                          {cat.label}
-                        </button>
-                      );
-                    })}
+
+                  <div>
+                    <label className="block text-[10px] font-mono uppercase text-muted mb-1">
+                      Normalization Scope
+                    </label>
+                    <select
+                      disabled={!tsNormEnabled}
+                      value={tsNormScope}
+                      onChange={(e) => setTsNormScope(e.target.value as TimeSeriesNormScope)}
+                      className="input-field py-1.5 text-xs font-mono disabled:opacity-50"
+                    >
+                      <option value="per_instance">Per Instance (Each Series)</option>
+                      <option value="global">Global (Min-Max Across Selected Series)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-mono uppercase text-muted mb-1">
+                      Normalization Dimension
+                    </label>
+                    <select
+                      disabled={!tsNormEnabled}
+                      value={tsNormDimension}
+                      onChange={(e) =>
+                        setTsNormDimension(e.target.value as TimeSeriesNormDimension)
+                      }
+                      className="input-field py-1.5 text-xs font-mono disabled:opacity-50"
+                    >
+                      <option value="value">Value Dimension (Min-Max [0, 1])</option>
+                      <option value="time">Time Dimension (Temporal / Cross-Series)</option>
+                    </select>
                   </div>
                 </div>
 
-                {/* Cohort Series Toggles (when multiple non-temporal cohorts exist) */}
-                {resolvedTimeSeries.cohorts.length > 1 && (
-                  <div className="space-y-1.5 pt-2 border-t border-border">
-                    <div className="text-[10px] font-mono uppercase text-muted">
-                      Cohort Curves ({resolvedTimeSeries.cohorts.length - hiddenCohortIds.length} /{" "}
-                      {resolvedTimeSeries.cohorts.length} visible)
-                    </div>
-                    <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
-                      {resolvedTimeSeries.cohorts.map((cohort, idx) => {
-                        const visible = !hiddenCohortIds.includes(cohort.cohort_id);
-                        const color = DOCUMENT_COLORS[idx % DOCUMENT_COLORS.length];
-                        return (
-                          <button
-                            key={cohort.cohort_id}
-                            type="button"
-                            onClick={() => toggleCohort(cohort.cohort_id)}
-                            className={`inline-flex items-center gap-1.5 px-2 py-0.5 text-[11px] font-mono rounded-sm border transition-colors ${
-                              visible
-                                ? "bg-surface text-ink border-ink"
-                                : "bg-zinc-100 text-zinc-400 border-border line-through"
-                            }`}
-                          >
-                            <span
-                              className="w-2 h-2 rounded-full"
-                              style={{ backgroundColor: visible ? color : "#D4D4D8" }}
-                            />
-                            {cohort.label}
-                          </button>
-                        );
-                      })}
-                    </div>
+                {/* Add Time Series Button + Builder Card & Defined Series Cards List */}
+                <div className="space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[11px] font-mono uppercase font-semibold text-ink">
+                      Defined Time Series ({customTimeSeries.length})
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setAddingSeriesOpen((v) => !v)}
+                      className="btn-primary py-1 px-3 text-xs"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      {addingSeriesOpen ? "Close Builder" : "Add Time Series"}
+                    </button>
                   </div>
-                )}
 
-                <EChartBox
-                  option={timeSeriesOption}
-                  className="w-full h-[440px]"
-                  onChartClick={handleTimeSeriesPointClick}
-                  onDataZoom={handleDataZoom}
-                />
+                  {/* Builder Card when "+ Add Time Series" is clicked */}
+                  {addingSeriesOpen && (
+                    <div className="border border-accent bg-accent-soft/40 p-3.5 rounded-sm space-y-3">
+                      <div className="text-xs font-mono uppercase font-semibold text-accent-dark">
+                        New Time Series Specification
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
+                        <div>
+                          <label className="block text-[10px] font-mono uppercase text-muted mb-1">
+                            Document Type / Group
+                          </label>
+                          <select
+                            value={draftSeriesCohortId}
+                            onChange={(e) => setDraftSeriesCohortId(e.target.value)}
+                            className="input-field py-1.5 text-xs font-mono"
+                          >
+                            {displayedTimeSeries.cohorts.map((c) => (
+                              <option key={c.cohort_id} value={c.cohort_id}>
+                                {c.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-mono uppercase text-muted mb-1">
+                            Topic / Label
+                          </label>
+                          <select
+                            value={draftSeriesTopicId}
+                            onChange={(e) => setDraftSeriesTopicId(e.target.value)}
+                            className="input-field py-1.5 text-xs font-mono"
+                          >
+                            {activeTsComparison.categories.map((cat) => (
+                              <option key={cat.id} value={cat.id}>
+                                {cat.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-mono uppercase text-muted mb-1">
+                            Date From (Default: All)
+                          </label>
+                          <input
+                            type="date"
+                            min={CORPUS_MIN_DATE}
+                            max={CORPUS_MAX_DATE}
+                            value={draftSeriesDateFrom}
+                            onClick={openNativeDatePicker}
+                            onChange={(e) =>
+                              setDraftSeriesDateFrom(clampCorpusDate(e.target.value))
+                            }
+                            className="input-field py-1.5 text-xs font-mono cursor-pointer"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-mono uppercase text-muted mb-1">
+                            Date To (Default: All)
+                          </label>
+                          <input
+                            type="date"
+                            min={CORPUS_MIN_DATE}
+                            max={CORPUS_MAX_DATE}
+                            value={draftSeriesDateTo}
+                            onClick={openNativeDatePicker}
+                            onChange={(e) =>
+                              setDraftSeriesDateTo(clampCorpusDate(e.target.value))
+                            }
+                            className="input-field py-1.5 text-xs font-mono cursor-pointer"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-mono uppercase text-muted mb-1">
+                            Series Name (Optional)
+                          </label>
+                          <input
+                            type="text"
+                            value={draftSeriesName}
+                            onChange={(e) => setDraftSeriesName(e.target.value)}
+                            placeholder="Auto-named if empty"
+                            className="input-field py-1.5 text-xs font-mono"
+                          />
+                        </div>
+                      </div>
+                      <div className="flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDraftSeriesDateFrom("");
+                            setDraftSeriesDateTo("");
+                            setDraftSeriesName("");
+                          }}
+                          className="btn-secondary py-1 px-2.5 text-xs"
+                        >
+                          Clear Dates
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleCreateCustomSeries}
+                          className="btn-primary py-1 px-3 text-xs"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          Add Series to Chart
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Defined Series List (Compact cards showing only the name; click name to expand edit/duplicate/delete) */}
+                  {customTimeSeries.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap gap-2">
+                        {customTimeSeries.map((item, idx) => {
+                          const color = DOCUMENT_COLORS[idx % DOCUMENT_COLORS.length];
+                          const isEditing = editingSeriesId === item.id;
+                          return (
+                            <div
+                              key={item.id}
+                              className={`border rounded-sm transition-colors ${
+                                isEditing
+                                  ? "border-accent bg-accent-soft/30 w-full p-3 space-y-2.5"
+                                  : "border-border bg-surface hover:border-ink px-3 py-1.5 inline-flex items-center gap-2"
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setEditingSeriesId((prev) =>
+                                      prev === item.id ? null : item.id
+                                    )
+                                  }
+                                  title="Click series name to edit, duplicate, or delete"
+                                  className="inline-flex items-center gap-2 text-xs font-mono font-semibold text-ink hover:text-accent-dark text-left"
+                                >
+                                  <span
+                                    className="w-2.5 h-2.5 rounded-full shrink-0"
+                                    style={{ backgroundColor: color }}
+                                  />
+                                  <span>{item.name}</span>
+                                </button>
+                                {isEditing && (
+                                  <div className="flex items-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDuplicateCustomSeries(item)}
+                                      className="btn-secondary py-1 px-2 text-[11px]"
+                                    >
+                                      <Copy className="w-3 h-3" />
+                                      Duplicate
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteCustomSeries(item.id)}
+                                      className="btn-secondary py-1 px-2 text-[11px] text-red-600"
+                                    >
+                                      <Trash2 className="w-3 h-3" />
+                                      Delete
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditingSeriesId(null)}
+                                      className="text-muted hover:text-ink p-1"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+
+                              {isEditing && (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2 pt-2 border-t border-border/60">
+                                  <div>
+                                    <label className="block text-[10px] font-mono uppercase text-muted mb-0.5">
+                                      Series Name
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={item.name}
+                                      onChange={(e) =>
+                                        handleUpdateCustomSeries(item.id, {
+                                          name: e.target.value,
+                                        })
+                                      }
+                                      className="input-field py-1 text-xs font-mono"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-[10px] font-mono uppercase text-muted mb-0.5">
+                                      Document Type / Group
+                                    </label>
+                                    <select
+                                      value={item.cohortId}
+                                      onChange={(e) =>
+                                        handleUpdateCustomSeries(item.id, {
+                                          cohortId: e.target.value,
+                                        })
+                                      }
+                                      className="input-field py-1 text-xs font-mono"
+                                    >
+                                      {displayedTimeSeries.cohorts.map((c) => (
+                                        <option key={c.cohort_id} value={c.cohort_id}>
+                                          {c.label}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                  <div>
+                                    <label className="block text-[10px] font-mono uppercase text-muted mb-0.5">
+                                      Topic / Label
+                                    </label>
+                                    <select
+                                      value={item.topicId}
+                                      onChange={(e) =>
+                                        handleUpdateCustomSeries(item.id, {
+                                          topicId: e.target.value,
+                                        })
+                                      }
+                                      className="input-field py-1 text-xs font-mono"
+                                    >
+                                      {activeTsComparison.categories.map((cat) => (
+                                        <option key={cat.id} value={cat.id}>
+                                          {cat.label}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                  <div>
+                                    <label className="block text-[10px] font-mono uppercase text-muted mb-0.5">
+                                      Date From
+                                    </label>
+                                    <input
+                                      type="date"
+                                      min={CORPUS_MIN_DATE}
+                                      max={CORPUS_MAX_DATE}
+                                      value={item.dateFrom}
+                                      onClick={openNativeDatePicker}
+                                      onChange={(e) =>
+                                        handleUpdateCustomSeries(item.id, {
+                                          dateFrom: clampCorpusDate(e.target.value),
+                                        })
+                                      }
+                                      className="input-field py-1 text-xs font-mono cursor-pointer"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-[10px] font-mono uppercase text-muted mb-0.5">
+                                      Date To
+                                    </label>
+                                    <input
+                                      type="date"
+                                      min={CORPUS_MIN_DATE}
+                                      max={CORPUS_MAX_DATE}
+                                      value={item.dateTo}
+                                      onClick={openNativeDatePicker}
+                                      onChange={(e) =>
+                                        handleUpdateCustomSeries(item.id, {
+                                          dateTo: clampCorpusDate(e.target.value),
+                                        })
+                                      }
+                                      className="input-field py-1 text-xs font-mono cursor-pointer"
+                                    />
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Time-Series Chart Canvas or Empty Prompt (By default no time series is shown) */}
+                {customTimeSeries.length === 0 ? (
+                  <div className="h-[320px] border border-dashed border-border rounded-sm bg-canvas/40 flex flex-col items-center justify-center text-center p-6">
+                    <p className="text-sm font-medium text-ink">
+                      No time series defined yet
+                    </p>
+                    <p className="mt-1 text-xs text-muted max-w-md">
+                      Click <strong>+ Add Time Series</strong> above to choose a Document Type,
+                      Topic, and Date Range. Each added series will appear in your list and render
+                      here immediately.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setAddingSeriesOpen(true)}
+                      className="btn-primary mt-3 py-1.5 px-3.5 text-xs"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      Add Time Series
+                    </button>
+                  </div>
+                ) : (
+                  <EChartBox
+                    option={timeSeriesOption}
+                    className="w-full h-[440px]"
+                    onChartClick={handleTimeSeriesPointClick}
+                    onDataZoom={handleDataZoom}
+                    onReady={(inst) => {
+                      tsChartRef.current = inst;
+                    }}
+                  />
+                )}
               </div>
             )}
 
-          {/* Standardized Category Scores Table + Export CSV (synced with active chronological point) */}
-          {comparison && comparison.categories.length > 0 && resolvedTimeSeries.cohorts.length > 0 && (
+          {/* Exhaustive Basket Raw Chunks & Classifier Scores Table (50-Row Preview + Full CSV Export) */}
+          {basket.length > 0 && basketChunksData && (
             <div className="panel overflow-hidden">
-              <div className="px-4 py-2.5 border-b border-border bg-zinc-50/70 flex items-center justify-between">
-                <span className="text-[11px] font-mono uppercase text-muted font-semibold">
-                  Standardized Category Scores ({metric} · {normalization}
-                  {activeRadarTick ? ` · ${activeRadarTick.full_label}` : ""})
-                </span>
+              <div className="px-4 py-3 border-b border-border bg-zinc-50/70 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <span className="text-xs font-mono uppercase text-ink font-semibold">
+                    Basket Documents Raw Chunks &amp; Classifier Scores
+                  </span>
+                  <p className="text-[11px] font-mono text-muted">
+                    Showing preview of first{" "}
+                    <strong>{basketChunksData.preview_count.toLocaleString()}</strong> rows out of{" "}
+                    <strong>{basketChunksData.total_chunks.toLocaleString()}</strong> total chunks
+                    across <strong>{basketChunksData.total_documents}</strong> selected documents (
+                    {dataSource})
+                  </p>
+                </div>
                 <button
                   type="button"
-                  onClick={handleExportCsv}
-                  title="Downloads all cohorts, meetings/periods, and slices in chronological order"
-                  className="btn-secondary py-1 px-2.5 text-xs"
+                  disabled={exportingBasketCsv || basketChunksData.total_chunks === 0}
+                  onClick={handleExportBasketChunksCsv}
+                  title="Download all chunks and raw classifier scores for all selected documents as CSV"
+                  className="btn-primary py-1.5 px-3 text-xs"
                 >
                   <Download className="w-3.5 h-3.5" />
-                  Export Full Chronological CSV
+                  {exportingBasketCsv
+                    ? "Exporting Full CSV..."
+                    : `Download All Chunks CSV (${basketChunksData.total_chunks.toLocaleString()})`}
                 </button>
               </div>
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto max-h-[440px] overflow-y-auto">
                 <table className="w-full text-left border-collapse text-xs font-mono">
                   <thead>
-                    <tr className="border-b border-border bg-surface text-muted">
-                      <th className="py-2 px-3">Topic / Category</th>
-                      {resolvedTimeSeries.cohorts.map((c) => (
-                        <th key={c.cohort_id} className="py-2 px-3 text-right whitespace-nowrap">
-                          {c.label}
+                    <tr className="border-b border-border bg-surface text-muted sticky top-0 z-10">
+                      <th className="py-2 px-3 whitespace-nowrap">Chunk ID</th>
+                      <th className="py-2 px-3 whitespace-nowrap">Doc Type</th>
+                      <th className="py-2 px-3 whitespace-nowrap">Meeting Date</th>
+                      <th className="py-2 px-3 whitespace-nowrap">Speaker</th>
+                      <th className="py-2 px-3 text-right whitespace-nowrap">p_relevant</th>
+                      {basketChunksData.categories.map((cat) => (
+                        <th key={cat.id} className="py-2 px-3 text-right whitespace-nowrap">
+                          {cat.label}
                         </th>
                       ))}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
-                    {comparison.categories.map((cat, cIdx) => (
-                      <tr key={cat.id} className="hover:bg-zinc-50">
-                        <td className="py-2 px-3 font-sans font-medium text-ink">{cat.label}</td>
-                        {resolvedTimeSeries.cohorts.map((c) => {
-                          const val = c.values_by_topic[cIdx]?.[safeRadarTickIdx];
-                          return (
-                            <td key={c.cohort_id} className="py-2 px-3 text-right text-zinc-700">
-                              {typeof val === "number" ? formatSigFigs(val, 3) : "—"}
-                            </td>
-                          );
-                        })}
+                    {basketChunksData.chunks.map((row) => (
+                      <tr key={`${row.doc_type}::${row.chunk_id}`} className="hover:bg-zinc-50">
+                        <td className="py-2 px-3 text-zinc-500 whitespace-nowrap">
+                          {row.chunk_id}
+                        </td>
+                        <td className="py-2 px-3 whitespace-nowrap">
+                          <span className="mono-tag">{row.doc_type_label}</span>
+                        </td>
+                        <td className="py-2 px-3 font-semibold text-ink whitespace-nowrap">
+                          {row.meeting_date}
+                        </td>
+                        <td className="py-2 px-3 text-zinc-700 whitespace-nowrap">
+                          {row.speaker || "—"}
+                        </td>
+                        <td className="py-2 px-3 text-right text-accent-dark whitespace-nowrap">
+                          {row.p_relevant !== null && row.p_relevant !== undefined
+                            ? formatSigFigs(row.p_relevant, 3)
+                            : "—"}
+                        </td>
+                        {basketChunksData.categories.map((cat) => (
+                          <td
+                            key={cat.id}
+                            className="py-2 px-3 text-right text-zinc-700 whitespace-nowrap"
+                          >
+                            {typeof row.scores[cat.id] === "number"
+                              ? formatSigFigs(row.scores[cat.id], 3)
+                              : "—"}
+                          </td>
+                        ))}
                       </tr>
                     ))}
                   </tbody>

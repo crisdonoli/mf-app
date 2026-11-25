@@ -1207,3 +1207,134 @@ def format_chronological_csv(compare_payload: dict[str, Any]) -> str:
             )
 
     return buf.getvalue()
+
+
+def get_basket_raw_chunks_table(
+    documents: list[dict[str, str]],
+    *,
+    data_source: Literal["similarity", "zero_shot", "relevance"] = "zero_shot",
+    limit: int = 50,
+    export_all: bool = False,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    """Return exhaustive per-chunk raw classifier scores across all documents in the basket.
+
+    For the UI table, returns a preview of the first ``limit`` (default 50) chunks along
+    with ``total_chunks``. When ``export_all=True``, collects all chunks for CSV download.
+    """
+    eng = ParquetQueryEngine(settings or get_settings())
+    seen: set[tuple[str, str]] = set()
+    ordered_docs: list[dict[str, str]] = []
+    for d in sorted(documents, key=lambda x: (x["meeting_date"], x["doc_type"])):
+        k = (d["doc_type"], d["meeting_date"])
+        if k not in seen:
+            seen.add(k)
+            ordered_docs.append({"doc_type": d["doc_type"], "meeting_date": d["meeting_date"]})
+
+    canonical_categories: list[dict[str, str]] = []
+    cat_ids: list[str] = []
+    rows_out: list[dict[str, Any]] = []
+    total_chunks = 0
+
+    for doc in ordered_docs:
+        dt = doc["doc_type"]
+        md = doc["meeting_date"]
+        dt_label = format_doc_type(dt)
+        speaker_meta = eng.get_document_speaker_meta(dt, md)
+        raw_mat, raw_labels, _ = _extract_raw_matrix_for_source(
+            dt, md, data_source, settings=settings
+        )
+        if raw_mat.size == 0:
+            continue
+
+        proj_mat, proj_labels = project_matrix_granularity(
+            raw_mat, raw_labels, granularity="macro"
+        )
+        if not canonical_categories:
+            cat_ids = list(proj_labels)
+            canonical_categories = [{"id": c, "label": format_label(c)} for c in cat_ids]
+
+        n_rows = proj_mat.shape[0]
+        total_chunks += n_rows
+
+        if not export_all and len(rows_out) >= limit:
+            continue
+
+        rel_mat, _ = eng.load_raw_relevance_matrix(dt, md)
+        has_rel = rel_mat.shape[0] >= n_rows
+
+        take_n = n_rows if export_all else min(n_rows, limit - len(rows_out))
+        for i in range(take_n):
+            meta_i = speaker_meta[i] if i < len(speaker_meta) else {}
+            cid = str(meta_i.get("chunk_id") or f"{dt}_{md}_{i + 1:04d}")
+            sp = str(meta_i.get("speaker") or "")
+            p_rel = round(float(rel_mat[i, 0]), 4) if has_rel else None
+            scores_dict = {
+                cat_ids[c_idx]: round(float(proj_mat[i, c_idx]), 4)
+                for c_idx in range(min(len(cat_ids), proj_mat.shape[1]))
+            }
+            rows_out.append(
+                {
+                    "chunk_id": cid,
+                    "doc_type": dt,
+                    "doc_type_label": dt_label,
+                    "meeting_date": md,
+                    "sequence_num": i + 1,
+                    "speaker": sp,
+                    "p_relevant": p_rel,
+                    "scores": scores_dict,
+                }
+            )
+
+    return {
+        "data_source": data_source,
+        "total_documents": len(ordered_docs),
+        "total_chunks": total_chunks,
+        "preview_count": len(rows_out),
+        "categories": canonical_categories,
+        "chunks": rows_out,
+    }
+
+
+def format_basket_raw_chunks_csv(
+    documents: list[dict[str, str]],
+    *,
+    data_source: Literal["similarity", "zero_shot", "relevance"] = "zero_shot",
+    settings: Settings | None = None,
+) -> str:
+    """Serialize all raw chunks across all documents in the comparison basket to CSV."""
+    payload = get_basket_raw_chunks_table(
+        documents, data_source=data_source, export_all=True, settings=settings
+    )
+    categories = payload.get("categories") or []
+    cat_ids = [str(c["id"]) for c in categories]
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(
+        [
+            "chunk_id",
+            "doc_type",
+            "doc_type_label",
+            "meeting_date",
+            "sequence_num",
+            "speaker",
+            "p_relevant",
+            *cat_ids,
+        ]
+    )
+    for row in payload.get("chunks") or []:
+        scores = row.get("scores") or {}
+        writer.writerow(
+            [
+                row.get("chunk_id") or "",
+                row.get("doc_type") or "",
+                row.get("doc_type_label") or "",
+                row.get("meeting_date") or "",
+                row.get("sequence_num") or 0,
+                row.get("speaker") or "",
+                "" if row.get("p_relevant") is None else row.get("p_relevant"),
+                *[scores.get(cid, "") for cid in cat_ids],
+            ]
+        )
+    return buf.getvalue()

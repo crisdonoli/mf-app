@@ -180,6 +180,9 @@ def project_matrix_granularity(
 
     label_to_idx = {lbl: i for i, lbl in enumerate(labels)}
 
+    if labels == ["relevant", "irrelevant"]:
+        return arr, ["relevant", "irrelevant"]
+
     if granularity == "macro":
         if labels == MACRO_CATEGORIES:
             return arr, list(MACRO_CATEGORIES)

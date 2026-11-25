@@ -4,6 +4,7 @@ import type {
   AdminActivityItem,
   AggregationMethod,
   AuthTokenResponse,
+  BasketChunksResponse,
   ClassificationInspectorResponse,
   CombineByMode,
   CompareDocumentRef,
@@ -346,6 +347,30 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  getBasketChunks: (body: {
+    documents: CompareDocumentRef[];
+    data_source?: DataSourceMode;
+    limit?: number;
+  }) =>
+    request<BasketChunksResponse>("/api/comparator/basket-chunks", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  exportBasketChunksCsv: async (body: {
+    documents: CompareDocumentRef[];
+    data_source?: DataSourceMode;
+  }): Promise<string> => {
+    const res = await doFetch("/api/comparator/basket-chunks/export-csv", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      throw new ApiError(await readErrorDetail(res), res.status);
+    }
+    return res.text();
+  },
 
   compareDocuments: (body: {
     documents: CompareDocumentRef[];

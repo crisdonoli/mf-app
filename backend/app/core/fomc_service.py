@@ -611,13 +611,16 @@ def get_similarity_matrix(
 def _extract_raw_matrix_for_source(
     doc_type: str,
     meeting_date: str,
-    data_source: Literal["similarity", "zero_shot"],
+    data_source: Literal["similarity", "zero_shot", "relevance"],
     settings: Settings | None = None,
 ) -> tuple[np.ndarray, list[str], str]:
     eng = _engine(settings)
     if data_source == "zero_shot":
         mat, score_cols = eng.load_raw_zero_shot_matrix(doc_type, meeting_date)
         return mat, score_cols, "zero_shot"
+    if data_source == "relevance":
+        mat, rel_cols = eng.load_raw_relevance_matrix(doc_type, meeting_date)
+        return mat, rel_cols, "relevance"
 
     _, raw_mat, raw_labels = eng.load_raw_similarity_slice(doc_type, meeting_date)
     return raw_mat, raw_labels, "similarity"
