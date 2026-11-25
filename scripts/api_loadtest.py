@@ -74,6 +74,8 @@ def scenario_request(name):
         return "GET", "/api/explorer/search?" + q, None
     if name == "compare":
         return "POST", "/api/comparator/compare", COMPARE_BODY
+    if name == "compare-tree":
+        return "POST", "/api/comparator/compare", None
     raise ValueError("scenario desconocido: " + name)
 
 
@@ -99,6 +101,56 @@ def get_json(base_url, path, token, timeout):
         return json.loads(resp.read().decode())
 
 
+def compare_tree_payload(documents, tree_year_span):
+    return {
+        "documents": documents,
+        "n_partitions": 4,
+        "data_source": "similarity",
+        "metric": "cosine",
+        "normalization": "none",
+        "granularity": "macro",
+        "macro_category": None,
+        "combine_by": "tree",
+        "sub_group_by": "none",
+        "agg_method": "mean",
+        "year_range_span": tree_year_span,
+        "grouping_tree": {
+            "split_levels": [
+                {"criterion": "year_range", "year_range_span": tree_year_span, "custom_ranges": []},
+                {"criterion": "month", "year_range_span": 5, "custom_ranges": []},
+            ],
+            "hidden_node_ids": [],
+            "node_splits": {},
+        },
+    }
+
+
+def build_compare_tree_body(token, base_url, timeout, max_docs, tree_year_span):
+    query = "date_from=1976-01-01&date_to=2020-12-31&limit=2000"
+    payload = get_json(base_url, "/api/explorer/search?" + query, token, timeout)
+    items = payload.get("items") or []
+    total = payload.get("total", len(items))
+    seen = set()
+    documents = []
+    for item in items:
+        key = (item.get("doc_type"), item.get("meeting_date"))
+        if key in seen:
+            continue
+        seen.add(key)
+        documents.append({"doc_type": key[0], "meeting_date": key[1]})
+    if total > len(items):
+        print("WARN: corpus has %d docs, using first %d (raise --max-docs? no, limit server-side is 2000)"
+              % (total, len(items)), file=sys.stderr)
+    if not documents:
+        print("ERR: search returned 0 documents", file=sys.stderr)
+        raise SystemExit(1)
+    if max_docs > 0 and len(documents) > max_docs:
+        step = len(documents) / float(max_docs)
+        documents = [documents[int(i * step)] for i in range(max_docs)]
+    print("compare-tree: using %d documents (of %s)" % (len(documents), total), flush=True)
+    return compare_tree_payload(documents, tree_year_span)
+
+
 def record(scenario, status, wall_ms, queue_wait_ms, retries, gate, position, eta_s, error):
     return {
         "ts": now_iso(),
@@ -114,8 +166,10 @@ def record(scenario, status, wall_ms, queue_wait_ms, retries, gate, position, et
     }
 
 
-def execute(base_url, scenario, token, timeout, max_retries):
-    method, path, body = scenario_request(scenario)
+def execute(base_url, scenario, token, timeout, max_retries, body=None):
+    method, path, default_body = scenario_request(scenario)
+    if body is None:
+        body = default_body
     url = base_url.rstrip("/") + path
     headers = {"Accept": "application/json"}
     if token:
@@ -261,7 +315,7 @@ def main():
     ap.add_argument("--email")
     ap.add_argument("--password")
     ap.add_argument("--scenario", required=True,
-                    choices=["search", "compare", "stats", "health", "mixed"])
+                    choices=["search", "compare", "stats", "health", "mixed", "compare-tree"])
     ap.add_argument("--warmup", type=int, default=0)
     ap.add_argument("--requests", type=int, default=10)
     ap.add_argument("--concurrency", type=int, default=1)
@@ -269,10 +323,16 @@ def main():
     ap.add_argument("--admin", action="store_true")
     ap.add_argument("--timeout", type=float, default=20.0)
     ap.add_argument("--max-retries", type=int, default=2)
+    ap.add_argument("--max-docs", type=int, default=60)
+    ap.add_argument("--tree-year-span", type=int, default=5)
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
     if args.dry_run:
+        if args.scenario == "compare-tree":
+            print("POST %s/api/comparator/compare" % args.base_url.rstrip("/"))
+            print("  body=" + json.dumps(compare_tree_payload([], args.tree_year_span), ensure_ascii=False))
+            return 0
         names = ["search", "stats", "compare"] if args.scenario == "mixed" else [args.scenario]
         for name in names:
             method, path, body = scenario_request(name)
@@ -297,6 +357,11 @@ def main():
             return 2
         token = login(args.base_url, args.email, args.password, args.timeout)
 
+    compare_tree_body = None
+    if args.scenario == "compare-tree":
+        compare_tree_body = build_compare_tree_body(
+            token, args.base_url, args.timeout, args.max_docs, args.tree_year_span)
+
     gates_before = None
     if args.admin:
         gates_before = gates_snapshot(args.base_url, token, args.timeout)
@@ -304,7 +369,8 @@ def main():
 
     warmup_wall = []
     for i in range(max(args.warmup, 0)):
-        r = execute(args.base_url, pick_scenario(i, args.scenario), token, args.timeout, args.max_retries)
+        r = execute(args.base_url, pick_scenario(i, args.scenario), token, args.timeout,
+                    args.max_retries, compare_tree_body)
         warmup_wall.append(r["wall_ms"])
     if warmup_wall:
         print("warmup: n=%d avg=%.0fms min=%.0fms max=%.0fms"
@@ -320,7 +386,7 @@ def main():
     try:
         futures = [
             pool.submit(execute, args.base_url, pick_scenario(i, args.scenario), token,
-                        args.timeout, args.max_retries)
+                        args.timeout, args.max_retries, compare_tree_body)
             for i in range(total)
         ]
         for fut in as_completed(futures):

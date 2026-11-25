@@ -12,6 +12,7 @@ Strictly adheres to zero-RAM-bloat principles:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -37,6 +38,8 @@ except ImportError:  # pragma: no cover
 
 _YEAR_RE = re.compile(r"year=(\d{4})")
 _SUBCHUNK_RE = re.compile(r"_s\d+$")
+
+LOGGER = logging.getLogger(__name__)
 
 # Bounded module-level caches keyed by source paths. Hard caps keep the 1.86 GiB host safe.
 _SPEAKER_CATALOG_CACHE: BoundedDict = BoundedDict(max_entries=8)
@@ -75,6 +78,11 @@ def clear_speaker_catalog_cache() -> None:
     _SIM_YEAR_CACHE.clear()
     _ZS_YEAR_CACHE.clear()
     _SEARCH_CACHE.clear()
+    try:
+        for npz_path in get_settings().resolve_matrix_cache_dir().rglob("*.npz"):
+            npz_path.unlink(missing_ok=True)
+    except Exception as exc:
+        LOGGER.warning("Could not purge similarity disk cache: %s", exc)
 
 
 def _norm_speaker(name: str) -> str:
@@ -1412,11 +1420,32 @@ class ParquetQueryEngine:
         year = meeting_date[:4]
         sim_root = self.settings.resolve_similarities_dir()
         sim_year_dir = sim_root / f"doc_type={doc_type}" / f"year={year}"
-        if not sim_year_dir.is_dir():
-            return [], np.empty((0, 0), dtype=np.float32), []
+        cache_dir = self.settings.resolve_matrix_cache_dir()
+        cache_path = cache_dir / doc_type / f"{meeting_date}.npz"
 
         ordered_ids = self.get_ordered_chunk_ids(doc_type, meeting_date)
         cache_key = (str(sim_root), doc_type, year)
+
+        if cache_key not in _SIM_YEAR_CACHE and cache_path.is_file():
+            try:
+                with np.load(cache_path) as data:
+                    disk_ids = [str(c) for c in data["chunk_ids"]]
+                    disk_matrix = data["matrix"].astype(np.float32, copy=False)
+                    disk_labels = [str(l) for l in data["labels"]]
+                if disk_matrix.shape[0] == len(disk_ids) and disk_matrix.shape[1] == len(disk_labels):
+                    vec_map = {cid: disk_matrix[i] for i, cid in enumerate(disk_ids)}
+                    _SIM_YEAR_CACHE[cache_key] = (vec_map, disk_labels)
+                    return disk_ids, disk_matrix, disk_labels
+                cache_path.unlink(missing_ok=True)
+            except Exception as exc:
+                LOGGER.warning("Discarding unreadable similarity cache %s: %s", cache_path, exc)
+                try:
+                    cache_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+        if not sim_year_dir.is_dir():
+            return [], np.empty((0, 0), dtype=np.float32), []
 
         if cache_key not in _SIM_YEAR_CACHE:
             sim_files = sorted(sim_year_dir.glob("part-*.parquet"))
@@ -1479,6 +1508,16 @@ class ParquetQueryEngine:
         if not final_ids:
             return [], np.empty((0, 0), dtype=np.float32), []
         matrix = np.vstack([vec_map[cid] for cid in final_ids]).astype(np.float32)
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(
+                cache_path,
+                chunk_ids=np.array(final_ids),
+                matrix=matrix,
+                labels=np.array(col_labels),
+            )
+        except Exception as exc:
+            LOGGER.warning("Could not persist similarity cache %s: %s", cache_path, exc)
         return final_ids, matrix, col_labels
 
     # ------------------------------------------------------------------ Zero-Shot Labels

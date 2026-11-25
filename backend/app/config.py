@@ -371,6 +371,16 @@ class Settings:
                 return path
         return candidates[0]
 
+    def resolve_matrix_cache_dir(self) -> Path:
+        candidates = [
+            self.resolve_similarities_dir().parent / "matrix_cache",
+            self.fomc_data_dir / "matrix_cache",
+            _MONOREPO_ROOT / "fomc-data" / "matrix_cache",
+        ]
+        target = next((path for path in candidates if path.parent.is_dir()), candidates[0])
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+
     def resolve_labels_dir(self) -> Path:
         candidates: list[Path] = []
         if self.labels_dir is not None:

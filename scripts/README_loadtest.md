@@ -16,7 +16,16 @@ python scripts/api_loadtest.py --base-url https://mi-vps --email a@b.cl --passwo
 # Frío vs caliente: mismo payload dos veces, mira warmup_ms aparte de p50/p95
 python scripts/api_loadtest.py --base-url https://mi-vps --email a@b.cl --password '***' \
   --scenario mixed --warmup 0 --requests 6 --concurrency 1 --out cold.csv
+
+# Comparador con árbol de agrupación (year_range -> month): muestrea 40 docs del corpus
+python scripts/api_loadtest.py --base-url https://mi-vps --email a@b.cl --password '***' \
+  --scenario compare-tree --max-docs 40 --tree-year-span 5 --warmup 1 --requests 6 --concurrency 1 --out tree_c1.csv
+
+# Previsualizar el body de compare-tree sin tocar la red
+python scripts/api_loadtest.py --base-url http://127.0.0.1:9 --scenario compare-tree --dry-run
 ```
+
+`compare-tree` consulta `/api/explorer/search` una vez para armar `documents` (dedup por `doc_type`+`meeting_date`, muestreo uniforme si `--max-docs` lo acota) y reutiliza el mismo body en todos los requests.
 
 ## Muestrear recursos del VPS en paralelo
 
