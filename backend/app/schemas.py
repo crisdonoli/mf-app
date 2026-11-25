@@ -80,6 +80,20 @@ class StudyForkRequest(BaseModel):
     config: Optional[dict] = None
 
 
+# ------------------------------------------------------------------ Custom SQL Filters
+class FilterCreateRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+    description: str = Field(default="", max_length=2000)
+    sql_text: str = Field(..., min_length=1, max_length=4000)
+    is_public: bool = False
+
+
+class FilterUpdateRequest(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    is_public: Optional[bool] = None
+
+
 # ------------------------------------------------------------------ Feedback & Fix Requests
 class FixRequestCreate(BaseModel):
     kind: Literal["feedback_chunk", "feedback_similarity", "fix_zero_shot", "fix_relevance"]

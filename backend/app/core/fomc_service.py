@@ -16,6 +16,7 @@ functions. Supports:
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from typing import Any, Literal
 
@@ -101,6 +102,64 @@ def get_corpus_stats(settings: Settings | None = None) -> dict[str, Any]:
     return stats
 
 
+_SQL_FILTER_COLUMNS = frozenset({
+    "chunk_id",
+    "meeting_date",
+    "doc_type",
+    "year",
+    "source_file",
+    "sequence_num",
+    "section",
+    "speaker",
+    "speaker_role",
+    "district",
+    "dialogue_id",
+    "chunk_sub_id",
+    "text_content",
+    "char_count",
+    "extraction_method",
+})
+_SQL_FILTER_DENY_WORDS = (
+    "drop",
+    "insert",
+    "update",
+    "delete",
+    "alter",
+    "create",
+    "exec",
+    "union",
+    "attach",
+    "detach",
+    "pragma",
+)
+_SQL_FILTER_DENY_SYMBOLS = (";", "--", "/*", "*/")
+_SQL_FILTER_COMPARATOR = re.compile(
+    r"([A-Za-z_][A-Za-z0-9_]*)\s*"
+    r"(?:>=|<=|<>|!=|=|<|>|\bNOT\s+ILIKE\b|\bNOT\s+LIKE\b|\bNOT\s+IN\b"
+    r"|\bILIKE\b|\bLIKE\b|\bBETWEEN\b|\bIN\b|\bIS\b)",
+    re.IGNORECASE,
+)
+
+
+def _validate_sql_filter(sql: str) -> str:
+    cleaned = sql.strip()
+    if not cleaned:
+        raise ValueError("Invalid SQL filter")
+    without_literals = re.sub(r"'(?:[^']|'')*'", "''", cleaned)
+    without_literals = re.sub(r'"(?:[^"]|"")*"', '""', without_literals)
+    lowered = without_literals.lower()
+    for word in _SQL_FILTER_DENY_WORDS:
+        if re.search(rf"\b{word}\b", lowered):
+            raise ValueError("Invalid SQL filter")
+    for symbol in _SQL_FILTER_DENY_SYMBOLS:
+        if symbol in without_literals:
+            raise ValueError("Invalid SQL filter")
+    for match in _SQL_FILTER_COMPARATOR.finditer(without_literals):
+        if match.group(1).lower() not in _SQL_FILTER_COLUMNS:
+            raise ValueError("Invalid SQL filter")
+    return cleaned
+
+
 def search_documents(
     *,
     date_from: str | None = None,
@@ -112,6 +171,7 @@ def search_documents(
     doc_types: list[str] | None = None,
     query_text: str | None = None,
     use_regex: bool = False,
+    sql_filter: str | None = None,
     filter_category: str | None = None,
     filter_metric: MetricTransform = "cosine",
     filter_normalization: NormalizationMode = "none",
@@ -125,6 +185,7 @@ def search_documents(
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     eng = _engine(settings)
+    validated_sql_filter = _validate_sql_filter(sql_filter) if sql_filter else None
     has_sim_filter = bool(filter_category and filter_min_score is not None)
     has_zs_filter = bool(filter_zs_category and filter_zs_min_prob is not None)
     has_rel_filter = bool(filter_rel_class and filter_rel_min_prob is not None)
@@ -142,6 +203,7 @@ def search_documents(
         doc_types=doc_types,
         query_text=query_text,
         use_regex=use_regex,
+        sql_filter=validated_sql_filter,
         limit=fetch_limit,
         offset=fetch_offset,
     )

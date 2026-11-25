@@ -600,6 +600,7 @@ class ParquetQueryEngine:
         doc_types: list[str] | None = None,
         query_text: str | None = None,
         use_regex: bool = False,
+        sql_filter: str | None = None,
         limit: int = 25,
         offset: int = 0,
     ) -> tuple[list[dict[str, Any]], int]:
@@ -618,7 +619,17 @@ class ParquetQueryEngine:
         # Skip caching oversized pages: they are rare and would blow the 64 MiB byte budget.
         if limit > 500:
             return self._search_documents_uncached(
-                eff_from, eff_to, eff_meeting, speaker, gender, eff_types, query_text, use_regex, limit, offset
+                eff_from,
+                eff_to,
+                eff_meeting,
+                speaker,
+                gender,
+                eff_types,
+                query_text,
+                use_regex,
+                sql_filter,
+                limit,
+                offset,
             )
 
         key = (
@@ -632,13 +643,24 @@ class ParquetQueryEngine:
             gender,
             query_text,
             use_regex,
+            sql_filter,
             limit,
             offset,
         )
         return _SEARCH_CACHE.get_or_compute(
             key,
             lambda: self._search_documents_uncached(
-                eff_from, eff_to, eff_meeting, speaker, gender, eff_types, query_text, use_regex, limit, offset
+                eff_from,
+                eff_to,
+                eff_meeting,
+                speaker,
+                gender,
+                eff_types,
+                query_text,
+                use_regex,
+                sql_filter,
+                limit,
+                offset,
             ),
         )
 
@@ -652,6 +674,7 @@ class ParquetQueryEngine:
         eff_types: list[str],
         query_text: str | None,
         use_regex: bool,
+        sql_filter: str | None,
         limit: int,
         offset: int,
     ) -> tuple[list[dict[str, Any]], int]:
@@ -683,7 +706,7 @@ class ParquetQueryEngine:
                 return [], 0
 
         if HAS_DUCKDB and gender_speakers is None:
-            if query_text and not use_regex and self._index_available():
+            if not sql_filter and query_text and not use_regex and self._index_available():
                 indexed = self._search_documents_indexed(
                     files=files,
                     date_from=eff_from,
@@ -706,6 +729,7 @@ class ParquetQueryEngine:
                 speaker=speaker,
                 query_text=query_text,
                 use_regex=use_regex,
+                sql_filter=sql_filter,
                 limit=limit,
                 offset=offset,
             )
@@ -732,6 +756,7 @@ class ParquetQueryEngine:
         speaker: str | None,
         query_text: str | None,
         use_regex: bool,
+        sql_filter: str | None = None,
         limit: int,
         offset: int,
     ) -> tuple[list[dict[str, Any]], int]:
@@ -764,6 +789,9 @@ class ParquetQueryEngine:
             else:
                 where_clauses.append("text_content ILIKE ?")
                 params.append(f"%{query_text}%")
+
+        if sql_filter:
+            where_clauses.append(f"({sql_filter})")
 
         where_sql = " AND ".join(where_clauses)
 

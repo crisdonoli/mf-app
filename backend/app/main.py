@@ -12,6 +12,7 @@ from .api.routes_auth import router as auth_router
 from .api.routes_comparator import router as comparator_router
 from .api.routes_explorer import router as explorer_router
 from .api.routes_feedback import router as feedback_router
+from .api.routes_filters import router as filters_router
 from .api.routes_studies import router as studies_router
 from .auth.security import hash_password
 from .config import get_settings
@@ -78,6 +79,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(studies_router)
     app.include_router(feedback_router)
+    app.include_router(filters_router)
     app.include_router(admin_router)
 
     return app

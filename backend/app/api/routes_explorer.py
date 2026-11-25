@@ -116,6 +116,7 @@ def explorer_search(
     doc_types: Optional[list[str]] = Query(default=None),
     query_text: Optional[str] = Query(default=None),
     use_regex: bool = Query(default=False),
+    sql_filter: Optional[str] = Query(default=None),
     filter_category: Optional[str] = Query(default=None),
     filter_metric: Literal["cosine", "softmax", "log"] = Query(default="cosine"),
     filter_normalization: Literal["none", "topic", "slice", "row", "column"] = Query(default="none"),
@@ -142,27 +143,31 @@ def explorer_search(
             if clean and clean not in parsed_doc_types:
                 parsed_doc_types.append(clean)
 
-    return search_documents(
-        date_from=date_from,
-        date_to=date_to,
-        meeting_date=meeting_date,
-        speaker=speaker,
-        gender=gender,
-        doc_type=parsed_doc_types[0] if len(parsed_doc_types) == 1 else None,
-        doc_types=parsed_doc_types if parsed_doc_types else None,
-        query_text=query_text,
-        use_regex=use_regex,
-        filter_category=filter_category,
-        filter_metric=filter_metric,
-        filter_normalization=filter_normalization,
-        filter_min_score=filter_min_score,
-        filter_zs_category=filter_zs_category,
-        filter_zs_min_prob=filter_zs_min_prob,
-        filter_rel_class=filter_rel_class,
-        filter_rel_min_prob=filter_rel_min_prob,
-        limit=limit,
-        offset=offset,
-    )
+    try:
+        return search_documents(
+            date_from=date_from,
+            date_to=date_to,
+            meeting_date=meeting_date,
+            speaker=speaker,
+            gender=gender,
+            doc_type=parsed_doc_types[0] if len(parsed_doc_types) == 1 else None,
+            doc_types=parsed_doc_types if parsed_doc_types else None,
+            query_text=query_text,
+            use_regex=use_regex,
+            sql_filter=sql_filter,
+            filter_category=filter_category,
+            filter_metric=filter_metric,
+            filter_normalization=filter_normalization,
+            filter_min_score=filter_min_score,
+            filter_zs_category=filter_zs_category,
+            filter_zs_min_prob=filter_zs_min_prob,
+            filter_rel_class=filter_rel_class,
+            filter_rel_min_prob=filter_rel_min_prob,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/explorer/meetings/{meeting_date}")

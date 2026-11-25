@@ -7,6 +7,7 @@ standard-library ``sqlite3`` fallback for lightweight test environments.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -185,6 +186,25 @@ if HAS_SQLALCHEMY:
         is_read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
         created_at: Mapped[str] = mapped_column(String(64), default=_utc_now_iso)
 
+    class CustomFilterDefModel(Base):
+        __tablename__ = "custom_filter_defs"
+        id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+        sql_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+        sql_text: Mapped[str] = mapped_column(Text, nullable=False)
+        created_at: Mapped[str] = mapped_column(String(64), default=_utc_now_iso)
+
+    class UserFilterModel(Base):
+        __tablename__ = "user_filters"
+        id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+        user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+        filter_def_id: Mapped[int] = mapped_column(
+            ForeignKey("custom_filter_defs.id", ondelete="CASCADE")
+        )
+        title: Mapped[str] = mapped_column(String(200), nullable=False)
+        description: Mapped[str] = mapped_column(Text, default="")
+        is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+        created_at: Mapped[str] = mapped_column(String(64), default=_utc_now_iso)
+
     class SearchCacheEntry(Base):
         __tablename__ = "search_cache"
         cache_key: Mapped[str] = mapped_column(String(512), primary_key=True)
@@ -317,6 +337,23 @@ class AppRepository:
                     is_read INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS custom_filter_defs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sql_hash TEXT UNIQUE NOT NULL,
+                    sql_text TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS user_filters (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    filter_def_id INTEGER NOT NULL REFERENCES custom_filter_defs(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    is_public INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS ix_custom_filter_defs_sql_hash ON custom_filter_defs(sql_hash);
+                CREATE INDEX IF NOT EXISTS ix_user_filters_user_id ON user_filters(user_id);
                 """
             )
         self._migrate_sqlite_columns()
@@ -794,6 +831,253 @@ class AppRepository:
             primary_author_id=parent["primary_author_id"],
             parent_study_id=parent["id"],
         )
+
+    # ------------------------------------------------------------------ Custom SQL Filters
+    def _hydrate_filter(
+        self,
+        ref_dict: dict[str, Any],
+        users_by_id: dict[int, dict[str, Any]],
+        sql_text: str,
+    ) -> dict[str, Any]:
+        owner = users_by_id.get(ref_dict["user_id"], {})
+        return {
+            "id": ref_dict["id"],
+            "owner_id": ref_dict["user_id"],
+            "owner_username": owner.get("username", "Unknown"),
+            "title": ref_dict["title"],
+            "description": ref_dict["description"],
+            "sql_text": sql_text,
+            "is_public": bool(ref_dict["is_public"]),
+            "created_at": ref_dict["created_at"],
+            "filter_def_id": ref_dict["filter_def_id"],
+        }
+
+    def _fetch_filter_defs(self) -> dict[int, str]:
+        if HAS_SQLALCHEMY and self._engine is not None:
+            with Session(self._engine) as session:
+                defs = session.scalars(select(CustomFilterDefModel)).all()
+                return {d.id: d.sql_text for d in defs}
+        with self._sqlite_conn() as conn:
+            rows = conn.execute("SELECT id, sql_text FROM custom_filter_defs").fetchall()
+            return {int(r["id"]): r["sql_text"] for r in rows}
+
+    def _fetch_all_user_filters_raw(
+        self,
+    ) -> tuple[list[dict[str, Any]], dict[int, dict[str, Any]], dict[int, str]]:
+        users_by_id = {u["id"]: u for u in self.list_all_users()}
+        defs_by_id = self._fetch_filter_defs()
+        if HAS_SQLALCHEMY and self._engine is not None:
+            with Session(self._engine) as session:
+                rows = session.scalars(
+                    select(UserFilterModel).order_by(UserFilterModel.created_at.desc())
+                ).all()
+                refs = [
+                    {
+                        "id": r.id,
+                        "user_id": r.user_id,
+                        "filter_def_id": r.filter_def_id,
+                        "title": r.title,
+                        "description": r.description,
+                        "is_public": bool(r.is_public),
+                        "created_at": r.created_at,
+                    }
+                    for r in rows
+                ]
+                return refs, users_by_id, defs_by_id
+        with self._sqlite_conn() as conn:
+            rows = conn.execute("SELECT * FROM user_filters ORDER BY created_at DESC").fetchall()
+            return [dict(r) for r in rows], users_by_id, defs_by_id
+
+    def get_filter(self, filter_id: int) -> dict[str, Any] | None:
+        refs, users_by_id, defs_by_id = self._fetch_all_user_filters_raw()
+        target = next((r for r in refs if r["id"] == filter_id), None)
+        if not target:
+            return None
+        return self._hydrate_filter(
+            target, users_by_id, defs_by_id.get(target["filter_def_id"], "")
+        )
+
+    def _insert_user_filter(
+        self,
+        user_id: int,
+        filter_def_id: int,
+        title: str,
+        description: str,
+        is_public: bool,
+    ) -> int:
+        now = _utc_now_iso()
+        if HAS_SQLALCHEMY and self._engine is not None:
+            with Session(self._engine) as session:
+                ref = UserFilterModel(
+                    user_id=user_id,
+                    filter_def_id=filter_def_id,
+                    title=title.strip(),
+                    description=description.strip(),
+                    is_public=bool(is_public),
+                    created_at=now,
+                )
+                session.add(ref)
+                session.commit()
+                session.refresh(ref)
+                return int(ref.id)
+        with self._sqlite_conn() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO user_filters (
+                    user_id, filter_def_id, title, description, is_public, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    filter_def_id,
+                    title.strip(),
+                    description.strip(),
+                    1 if is_public else 0,
+                    now,
+                ),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def create_filter(
+        self,
+        user_id: int,
+        title: str,
+        description: str,
+        sql_text: str,
+        is_public: bool = False,
+    ) -> dict[str, Any]:
+        clean_sql = sql_text.strip()
+        sql_hash = hashlib.sha256(clean_sql.encode("utf-8")).hexdigest()
+        now = _utc_now_iso()
+        if HAS_SQLALCHEMY and self._engine is not None:
+            with Session(self._engine) as session:
+                def_row = session.scalar(
+                    select(CustomFilterDefModel).where(CustomFilterDefModel.sql_hash == sql_hash)
+                )
+                if not def_row:
+                    def_row = CustomFilterDefModel(
+                        sql_hash=sql_hash, sql_text=clean_sql, created_at=now
+                    )
+                    session.add(def_row)
+                    session.flush()
+                def_id = int(def_row.id)
+        else:
+            with self._sqlite_conn() as conn:
+                row = conn.execute(
+                    "SELECT id FROM custom_filter_defs WHERE sql_hash = ?", (sql_hash,)
+                ).fetchone()
+                if row:
+                    def_id = int(row["id"])
+                else:
+                    cur = conn.execute(
+                        "INSERT INTO custom_filter_defs (sql_hash, sql_text, created_at) VALUES (?, ?, ?)",
+                        (sql_hash, clean_sql, now),
+                    )
+                    def_id = int(cur.lastrowid)
+                conn.commit()
+        ref_id = self._insert_user_filter(user_id, def_id, title, description, is_public)
+        return self.get_filter(ref_id)  # type: ignore
+
+    def list_user_filters(self, user_id: int) -> list[dict[str, Any]]:
+        refs, users_by_id, defs_by_id = self._fetch_all_user_filters_raw()
+        return [
+            self._hydrate_filter(r, users_by_id, defs_by_id.get(r["filter_def_id"], ""))
+            for r in refs
+            if r["user_id"] == user_id
+        ]
+
+    def list_community_filters(self) -> list[dict[str, Any]]:
+        refs, users_by_id, defs_by_id = self._fetch_all_user_filters_raw()
+        return [
+            self._hydrate_filter(r, users_by_id, defs_by_id.get(r["filter_def_id"], ""))
+            for r in refs
+            if bool(r["is_public"])
+        ]
+
+    def add_filter_to_me(self, user_id: int, filter_id: int) -> dict[str, Any] | None:
+        refs, _users_by_id, _defs_by_id = self._fetch_all_user_filters_raw()
+        target = next((r for r in refs if r["id"] == filter_id), None)
+        if not target or not bool(target["is_public"]):
+            return None
+        new_id = self._insert_user_filter(
+            user_id,
+            target["filter_def_id"],
+            f"{target['title']}",
+            target["description"],
+            False,
+        )
+        return self.get_filter(new_id)
+
+    def delete_filter(self, user_id: int, filter_id: int) -> bool:
+        if HAS_SQLALCHEMY and self._engine is not None:
+            with Session(self._engine) as session:
+                ref = session.scalar(
+                    select(UserFilterModel).where(
+                        UserFilterModel.id == filter_id, UserFilterModel.user_id == user_id
+                    )
+                )
+                if not ref:
+                    return False
+                session.delete(ref)
+                session.commit()
+                return True
+        with self._sqlite_conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM user_filters WHERE id = ? AND user_id = ?", (filter_id, user_id)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def update_filter(
+        self,
+        user_id: int,
+        filter_id: int,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+        is_public: bool | None = None,
+    ) -> dict[str, Any] | None:
+        if HAS_SQLALCHEMY and self._engine is not None:
+            with Session(self._engine) as session:
+                ref = session.scalar(
+                    select(UserFilterModel).where(
+                        UserFilterModel.id == filter_id, UserFilterModel.user_id == user_id
+                    )
+                )
+                if not ref:
+                    return None
+                if title is not None:
+                    ref.title = title.strip()
+                if description is not None:
+                    ref.description = description.strip()
+                if is_public is not None:
+                    ref.is_public = bool(is_public)
+                session.commit()
+        else:
+            with self._sqlite_conn() as conn:
+                row = conn.execute(
+                    "SELECT * FROM user_filters WHERE id = ? AND user_id = ?",
+                    (filter_id, user_id),
+                ).fetchone()
+                if not row:
+                    return None
+                conn.execute(
+                    """
+                    UPDATE user_filters
+                    SET title = ?, description = ?, is_public = ?
+                    WHERE id = ? AND user_id = ?
+                    """,
+                    (
+                        title.strip() if title is not None else row["title"],
+                        description.strip() if description is not None else row["description"],
+                        (1 if is_public else 0) if is_public is not None else row["is_public"],
+                        filter_id,
+                        user_id,
+                    ),
+                )
+                conn.commit()
+        return self.get_filter(filter_id)
 
     # ------------------------------------------------------------------ Fix Requests & Notifications
     def create_fix_request(

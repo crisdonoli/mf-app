@@ -215,7 +215,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
       >
         <div
           style={{ height: `${NAVBAR_HEIGHT_PX}px` }}
-          className="w-full max-w-[1640px] mx-auto px-3 sm:px-4 flex items-center justify-between gap-2 sm:gap-3"
+          className="w-[98%] mx-auto px-3 sm:px-4 flex items-center justify-between gap-2 sm:gap-3"
         >
           {/* Logo Container: shrink-0 prevents navbar items from overlapping or crushing the logo */}
           <div
@@ -389,6 +389,8 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
               {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
 
+            <span className="w-px h-5 bg-border hidden md:block" aria-hidden="true" />
+
             {/* Dynamic Database Version Selector at Rightmost End of Navbar */}
             {availableDbVersions.length > 0 && (
               <div
@@ -511,7 +513,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
       <QueueBanner />
 
       {/* Main Layout Shell with Collapsible History Sidebar & Aligned Peeking Side Tab */}
-      <div className="flex-1 flex max-w-[1640px] w-full mx-auto relative">
+      <div className="flex-1 flex w-[98%] mx-auto relative">
         {user && sidebarOpen && (
           <aside className="w-64 shrink-0 border-r border-border bg-surface hidden lg:flex flex-col">
             <div
@@ -634,7 +636,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
 
       {/* Institutional Footer with Centered FEN Logo & Caption */}
       <footer className="border-t border-border bg-surface/90 mt-auto">
-        <div className="max-w-[1640px] mx-auto px-4 sm:px-6 py-6 flex flex-col items-center justify-center gap-3 text-center">
+        <div className="w-[98%] mx-auto px-4 sm:px-6 py-6 flex flex-col items-center justify-center gap-3 text-center">
           <a
             href="https://fen.uchile.cl/"
             target="_blank"

@@ -406,6 +406,7 @@ export interface ExplorerSearchConfig {
   filter_zs_min_prob?: number | null;
   filter_rel_class?: "" | "relevant" | "irrelevant";
   filter_rel_min_prob?: number | null;
+  sql_filter?: string;
 }
 
 export interface HistoryPortfolioConfig {
@@ -525,4 +526,16 @@ export interface SearchHistoryItem {
   label: string;
   payload: Record<string, unknown>;
   created_at: string;
+}
+
+export interface CustomFilter {
+  id: number;
+  owner_id: number;
+  owner_username: string;
+  title: string;
+  description: string;
+  sql_text: string;
+  is_public: boolean;
+  created_at: string;
+  filter_def_id: number;
 }

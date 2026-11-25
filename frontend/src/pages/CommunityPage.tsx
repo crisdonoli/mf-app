@@ -1,11 +1,11 @@
 /** Community Feed Page — Browse public studies, Explorer searches, and histories with Fork Lineage links. */
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { BookOpen, ExternalLink, GitCompare, GitFork, History, Search } from "lucide-react";
+import { BookOpen, ExternalLink, Filter, GitCompare, GitFork, History, Plus, Search } from "lucide-react";
 import { useWorkspace } from "../context/WorkspaceContext";
 import { api } from "../lib/api";
-import type { SearchHistoryItem, StudyItem, StudyType } from "../types/api";
+import type { CustomFilter, SearchHistoryItem, StudyItem, StudyType } from "../types/api";
 
 function resolveStudyType(st: StudyItem): StudyType {
   if (st.study_type === "explorer_search" || st.study_type === "history") {
@@ -19,6 +19,8 @@ export const CommunityPage: React.FC = () => {
   const { replaceHistory, setSidebarOpen } = useWorkspace();
   const [studies, setStudies] = useState<StudyItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [communityFilters, setCommunityFilters] = useState<CustomFilter[]>([]);
+  const [filterFeedback, setFilterFeedback] = useState<Record<number, string>>({});
 
   useEffect(() => {
     api
@@ -26,6 +28,28 @@ export const CommunityPage: React.FC = () => {
       .then((res) => setStudies(res.items))
       .finally(() => setLoading(false));
   }, []);
+
+  const loadCommunityFilters = useCallback(async () => {
+    const res = await api.listCommunityFilters();
+    setCommunityFilters(res.items);
+  }, []);
+
+  useEffect(() => {
+    loadCommunityFilters().catch(() => {});
+  }, [loadCommunityFilters]);
+
+  const handleAddFilter = async (f: CustomFilter) => {
+    try {
+      await api.addFilterToMe(f.id);
+      setFilterFeedback((prev) => ({ ...prev, [f.id]: "Added to your filters" }));
+      await loadCommunityFilters();
+    } catch (err) {
+      setFilterFeedback((prev) => ({
+        ...prev,
+        [f.id]: err instanceof Error ? err.message : "Failed to add filter",
+      }));
+    }
+  };
 
   const handleOpen = (st: StudyItem) => {
     const kind = resolveStudyType(st);
@@ -192,6 +216,58 @@ export const CommunityPage: React.FC = () => {
           })}
         </div>
       )}
+
+      {/* Community SQL Filters */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between gap-2 border-b border-border pb-2">
+          <span className="text-xs font-mono uppercase tracking-wider text-accent-dark font-semibold flex items-center gap-1.5">
+            <Filter className="w-3.5 h-3.5" />
+            Community Filters ({communityFilters.length})
+          </span>
+          <span className="text-[11px] font-mono text-zinc-400">
+            Shared WHERE predicates over text_metadata
+          </span>
+        </div>
+
+        {communityFilters.length === 0 ? (
+          <div className="panel p-6 text-center text-xs text-muted">
+            No public SQL filters shared yet.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {communityFilters.map((f) => (
+              <div key={f.id} className="panel p-4 flex flex-col gap-2">
+                <div className="flex items-start justify-between gap-2">
+                  <h2 className="text-sm font-semibold text-ink">{f.title}</h2>
+                  <span className="mono-tag text-[10px] uppercase shrink-0">Public</span>
+                </div>
+                <p className="text-[11px] font-mono text-zinc-500">
+                  by <strong className="text-ink">{f.owner_username}</strong>
+                </p>
+                {f.description && (
+                  <p className="text-xs text-muted leading-relaxed">{f.description}</p>
+                )}
+                <code className="block px-2 py-1.5 border border-border rounded-sm bg-canvas font-mono text-[11px] text-ink break-all">
+                  {f.sql_text}
+                </code>
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <span className="text-[10px] font-mono text-zinc-400">
+                    {filterFeedback[f.id] || new Date(f.created_at).toLocaleDateString()}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleAddFilter(f)}
+                    className="btn-primary py-1.5 px-3 text-xs"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    Add to my filters
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 };

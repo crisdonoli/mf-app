@@ -4,9 +4,12 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import type { EChartsCoreOption } from "echarts";
 import {
   BookmarkPlus,
   CheckSquare,
+  ChevronDown,
+  ChevronUp,
   Download,
   FileText,
   Filter,
@@ -47,6 +50,7 @@ import {
 } from "../lib/format";
 import type {
   ClassificationInspectorResponse,
+  CustomFilter,
   DocTypeOption,
   DocumentChunk,
   GranularityMode,
@@ -57,6 +61,36 @@ import type {
   SearchDocumentItem,
   SimilarityMatrixResponse,
 } from "../types/api";
+
+const NUMERIC_DIST_COLUMNS: Array<{ key: keyof SearchDocumentItem; label: string }> = [
+  { key: "chunk_count", label: "chunk_count" },
+  { key: "year", label: "year" },
+  { key: "speaker_count", label: "speaker_count" },
+  { key: "matched_score", label: "matched_score" },
+  { key: "matched_zs_prob", label: "matched_zs_prob" },
+  { key: "matched_rel_prob", label: "matched_rel_prob" },
+];
+
+function binValues(values: number[], bins: number) {
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  if (min === max) return { labels: [String(min)], counts: [values.length] };
+  const step = (max - min) / bins;
+  const counts = Array.from({ length: bins }, () => 0);
+  for (const v of values) {
+    counts[Math.min(bins - 1, Math.floor((v - min) / step))] += 1;
+  }
+  const labels = counts.map((_, i) => String(Number((min + step * i).toPrecision(3))));
+  return { labels, counts };
+}
+
+function movingAverage(counts: number[], window = 3) {
+  const half = Math.floor(window / 2);
+  return counts.map((_, i) => {
+    const slice = counts.slice(Math.max(0, i - half), Math.min(counts.length, i + half + 1));
+    return Number((slice.reduce((a, b) => a + b, 0) / slice.length).toFixed(2));
+  });
+}
 
 export const ExplorerPage: React.FC = () => {
   const { isDark } = useTheme();
@@ -106,6 +140,18 @@ export const ExplorerPage: React.FC = () => {
   const [saveSearchMsg, setSaveSearchMsg] = useState<string | null>(null);
   const [loadedPortfolioTitle, setLoadedPortfolioTitle] = useState<string | null>(null);
 
+  const [filtersCollapsed, setFiltersCollapsed] = useState(false);
+  const [sqlFilter, setSqlFilter] = useState("");
+  const [savedFilters, setSavedFilters] = useState<CustomFilter[]>([]);
+  const [selectedFilterId, setSelectedFilterId] = useState("");
+  const [filterModalOpen, setFilterModalOpen] = useState(false);
+  const [filterTitle, setFilterTitle] = useState("");
+  const [filterDesc, setFilterDesc] = useState("");
+  const [filterPublic, setFilterPublic] = useState(false);
+  const [savingFilter, setSavingFilter] = useState(false);
+  const [filterModalMsg, setFilterModalMsg] = useState<string | null>(null);
+  const [distCollapsed, setDistCollapsed] = useState(true);
+
   const [selectedMeeting, setSelectedMeeting] = useState<string | null>(null);
   const [activeDocType, setActiveDocType] = useState<string>("transcripts");
   const [bundle, setBundle] = useState<MeetingBundleResponse | null>(null);
@@ -148,6 +194,15 @@ export const ExplorerPage: React.FC = () => {
     api.getDocTypes().then((r) => setDocTypes(r.doc_types)).catch(() => {});
     api.getTaxonomy().then((t) => setMacroCategories(t.macro_categories)).catch(() => {});
   }, [dbVersionRevision]);
+
+  const loadMyFilters = useCallback(async () => {
+    const res = await api.listMyFilters();
+    setSavedFilters(res.items);
+  }, []);
+
+  useEffect(() => {
+    loadMyFilters().catch(() => {});
+  }, [loadMyFilters]);
 
   // Allow Escape key to exit maximized table view
   useEffect(() => {
@@ -200,6 +255,7 @@ export const ExplorerPage: React.FC = () => {
         query_text?: string;
         use_regex?: boolean;
         score?: ScoreThresholdFilterValue;
+        sql_filter?: string;
       },
       shouldRecord = true
     ) => {
@@ -242,6 +298,7 @@ export const ExplorerPage: React.FC = () => {
           sf.filterRelClass && sf.filterRelMinProb.trim() !== ""
             ? Number(sf.filterRelMinProb)
             : undefined,
+        sql_filter: overrides?.sql_filter ?? (sqlFilter.trim() || undefined),
         limit: 50,
         offset: 0,
       };
@@ -268,7 +325,7 @@ export const ExplorerPage: React.FC = () => {
         setSearching(false);
       }
     },
-    [dateFrom, dateTo, speakerFilter, docTypeFilters, queryText, useRegex, scoreFilter, recordHistory]
+    [dateFrom, dateTo, speakerFilter, docTypeFilters, queryText, useRegex, scoreFilter, sqlFilter, recordHistory]
   );
 
   // Load saved Explorer search from Portfolio if ?portfolio=<id> is present
@@ -304,6 +361,7 @@ export const ExplorerPage: React.FC = () => {
             setSpeakerFilter(String(p.speaker || ""));
             setQueryText(String(p.query_text || ""));
             setUseRegex(Boolean(p.use_regex));
+            setSqlFilter(String(p.sql_filter || ""));
             executeSearch(
               {
                 date_from: restoredFrom,
@@ -312,6 +370,7 @@ export const ExplorerPage: React.FC = () => {
                 speaker: String(p.speaker || ""),
                 query_text: String(p.query_text || ""),
                 use_regex: Boolean(p.use_regex),
+                sql_filter: String(p.sql_filter || "") || undefined,
               },
               false
             );
@@ -350,6 +409,7 @@ export const ExplorerPage: React.FC = () => {
         setQueryText(String(cfg.query_text || ""));
         setUseRegex(Boolean(cfg.use_regex));
         setScoreFilter(restoredScore);
+        setSqlFilter(String(cfg.sql_filter || ""));
         executeSearch(
           {
             date_from: restoredFrom,
@@ -359,6 +419,7 @@ export const ExplorerPage: React.FC = () => {
             query_text: String(cfg.query_text || ""),
             use_regex: Boolean(cfg.use_regex),
             score: restoredScore,
+            sql_filter: String(cfg.sql_filter || "") || undefined,
           },
           false
         );
@@ -441,6 +502,7 @@ export const ExplorerPage: React.FC = () => {
       setQueryText(String(p.query_text || ""));
       setUseRegex(Boolean(p.use_regex));
       setScoreFilter(restoredScore);
+      setSqlFilter(String(p.sql_filter || ""));
       executeSearch(
         {
           date_from: restoredFrom || undefined,
@@ -450,6 +512,7 @@ export const ExplorerPage: React.FC = () => {
           query_text: p.query_text as string | undefined,
           use_regex: Boolean(p.use_regex),
           score: restoredScore,
+          sql_filter: String(p.sql_filter || "") || undefined,
         },
         false
       );
@@ -559,6 +622,122 @@ export const ExplorerPage: React.FC = () => {
     return Array.from(map.entries());
   }, [results]);
 
+  const columnDistributions = useMemo(() => {
+    const charts: Array<{ key: string; title: string; option: EChartsCoreOption }> = [];
+    if (results.length === 0) return charts;
+    const axisColor = isDark ? "#94A3B8" : "#64748B";
+    const gridColor = isDark ? "#334155" : "#E2E8F0";
+    const barColor = isDark ? "#3B82F6" : "#1D4ED8";
+    const lineColor = isDark ? "#F59E0B" : "#B45309";
+
+    for (const { key, label } of NUMERIC_DIST_COLUMNS) {
+      const values = results
+        .map((r) => r[key])
+        .filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+      if (values.length === 0) continue;
+      const { labels, counts } = binValues(values, 12);
+      charts.push({
+        key: String(key),
+        title: label,
+        option: {
+          animation: false,
+          tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+          grid: { left: 8, right: 16, top: 16, bottom: 8, containLabel: true },
+          xAxis: {
+            type: "category",
+            data: labels,
+            axisTick: { show: false },
+            axisLabel: { color: axisColor, fontSize: 9 },
+          },
+          yAxis: {
+            type: "value",
+            axisLabel: { color: axisColor, fontSize: 9 },
+            splitLine: { lineStyle: { color: gridColor } },
+          },
+          series: [
+            {
+              name: "frequency",
+              type: "bar",
+              data: counts,
+              barCategoryGap: "15%",
+              itemStyle: { color: barColor, opacity: 0.75 },
+            },
+            {
+              name: "density",
+              type: "line",
+              data: movingAverage(counts),
+              smooth: true,
+              symbol: "none",
+              lineStyle: { color: lineColor, width: 1.5 },
+              itemStyle: { color: lineColor },
+            },
+          ],
+        },
+      });
+    }
+
+    const horizontalBars = (title: string, entries: [string, number][]): EChartsCoreOption => ({
+      animation: false,
+      tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+      grid: { left: 8, right: 24, top: 8, bottom: 8, containLabel: true },
+      xAxis: {
+        type: "value",
+        axisLabel: { color: axisColor, fontSize: 9 },
+        splitLine: { lineStyle: { color: gridColor } },
+      },
+      yAxis: {
+        type: "category",
+        inverse: true,
+        data: entries.map(([name]) => name),
+        axisLine: { show: false },
+        axisTick: { show: false },
+        axisLabel: { color: axisColor, fontSize: 9, width: 92, overflow: "truncate" },
+      },
+      series: [
+        {
+          name: title,
+          type: "bar",
+          data: entries.map(([, count]) => count),
+          barMaxWidth: 14,
+          itemStyle: { color: barColor, borderRadius: [0, 2, 2, 0] },
+        },
+      ],
+    });
+
+    const docTypeCounts = new Map<string, number>();
+    for (const r of results) {
+      const label = r.doc_type_label || r.doc_type;
+      docTypeCounts.set(label, (docTypeCounts.get(label) || 0) + 1);
+    }
+    const docTypeEntries = Array.from(docTypeCounts.entries()).sort((a, b) => b[1] - a[1]);
+    if (docTypeEntries.length > 0) {
+      charts.push({
+        key: "doc_type",
+        title: "doc_type",
+        option: horizontalBars("documents", docTypeEntries),
+      });
+    }
+
+    const speakerCounts = new Map<string, number>();
+    for (const r of results) {
+      for (const speaker of r.top_speakers || []) {
+        speakerCounts.set(speaker, (speakerCounts.get(speaker) || 0) + 1);
+      }
+    }
+    const speakerEntries = Array.from(speakerCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 15);
+    if (speakerEntries.length > 0) {
+      charts.push({
+        key: "top_speakers",
+        title: "top_speakers",
+        option: horizontalBars("documents", speakerEntries),
+      });
+    }
+
+    return charts;
+  }, [results, isDark]);
+
   // Export Explorer results table to CSV (Req 4.4)
   const handleExportExplorerCsv = () => {
     if (locallyFilteredResults.length === 0) return;
@@ -641,6 +820,7 @@ export const ExplorerPage: React.FC = () => {
           scoreFilter.filterRelClass && scoreFilter.filterRelMinProb.trim() !== ""
             ? Number(scoreFilter.filterRelMinProb)
             : null,
+        sql_filter: sqlFilter.trim() || undefined,
       };
       await api.createStudy({
         title: savedSearchTitle.trim(),
@@ -658,6 +838,27 @@ export const ExplorerPage: React.FC = () => {
       setSaveSearchMsg(err instanceof Error ? err.message : "Failed to save search");
     } finally {
       setSavingSearch(false);
+    }
+  };
+
+  const handleCreateFilter = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!filterTitle.trim() || !sqlFilter.trim()) return;
+    setSavingFilter(true);
+    setFilterModalMsg(null);
+    try {
+      await api.createFilter({
+        title: filterTitle.trim(),
+        description: filterDesc.trim(),
+        sql_text: sqlFilter.trim(),
+        is_public: filterPublic,
+      });
+      await loadMyFilters();
+      setFilterModalOpen(false);
+    } catch (err) {
+      setFilterModalMsg(err instanceof Error ? err.message : "Failed to save filter");
+    } finally {
+      setSavingFilter(false);
     }
   };
 
@@ -1112,6 +1313,27 @@ export const ExplorerPage: React.FC = () => {
         }}
         className="panel p-5 space-y-4"
       >
+        <div className="flex items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={() => setFiltersCollapsed((v) => !v)}
+            aria-expanded={!filtersCollapsed}
+            className="inline-flex items-center gap-1.5 text-xs font-mono uppercase tracking-wider font-semibold text-ink hover:text-accent-dark transition-colors"
+          >
+            {filtersCollapsed ? (
+              <ChevronDown className="w-4 h-4 text-accent" />
+            ) : (
+              <ChevronUp className="w-4 h-4 text-accent" />
+            )}
+            <span>Multi-Criteria Search</span>
+          </button>
+          <span className="text-[10px] font-mono text-zinc-400 hidden sm:inline">
+            {filtersCollapsed ? "Expand filters" : "Collapse filters"}
+          </span>
+        </div>
+
+        {!filtersCollapsed && (
+          <>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
           <div>
             <label className="block text-[11px] font-mono uppercase text-muted mb-1">
@@ -1184,6 +1406,60 @@ export const ExplorerPage: React.FC = () => {
           />
         </div>
 
+        {/* Custom SQL Filter over text_metadata columns (server-side WHERE predicate) */}
+        <div className="pt-3 border-t border-border space-y-2">
+          <label className="block text-[11px] font-mono uppercase text-muted">
+            Custom SQL Filter <span className="text-zinc-400 normal-case">(WHERE predicate)</span>
+          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              value={sqlFilter}
+              onChange={(e) => {
+                setSqlFilter(e.target.value);
+                setSelectedFilterId("");
+              }}
+              placeholder="e.g., char_count > 200"
+              className="input-field font-mono text-xs flex-1 min-w-[220px]"
+            />
+            <select
+              value={selectedFilterId}
+              onChange={(e) => {
+                const id = e.target.value;
+                setSelectedFilterId(id);
+                const picked = savedFilters.find((f) => String(f.id) === id);
+                if (picked) setSqlFilter(picked.sql_text);
+              }}
+              className="input-field text-xs w-auto min-w-[200px]"
+            >
+              <option value="">Saved filters...</option>
+              {savedFilters.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.title}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              disabled={!sqlFilter.trim()}
+              onClick={() => {
+                setFilterTitle("");
+                setFilterDesc("");
+                setFilterPublic(false);
+                setFilterModalMsg(null);
+                setFilterModalOpen(true);
+              }}
+              className="btn-secondary text-xs"
+            >
+              <Save className="w-3.5 h-3.5" />
+              Save Filter
+            </button>
+          </div>
+          <p className="text-[10px] font-mono text-zinc-400">
+            Applied server-side over text_metadata columns (e.g. char_count &gt; 200).
+          </p>
+        </div>
+
         <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
           <div className="flex flex-wrap items-center gap-4">
             <label className="inline-flex items-center gap-2 text-xs font-mono text-muted cursor-pointer">
@@ -1210,6 +1486,8 @@ export const ExplorerPage: React.FC = () => {
                 setQueryText("");
                 setUseRegex(false);
                 setScoreFilter(EMPTY_SCORE_THRESHOLD_FILTER);
+                setSqlFilter("");
+                setSelectedFilterId("");
               }}
               className="btn-secondary text-xs"
             >
@@ -1221,6 +1499,8 @@ export const ExplorerPage: React.FC = () => {
             </button>
           </div>
         </div>
+          </>
+        )}
       </form>
 
       {searchError && (
@@ -1237,6 +1517,48 @@ export const ExplorerPage: React.FC = () => {
         />
       )}
       {renderMatchingDocumentsPanel(tableMaximized)}
+
+      {/* Column Distributions: client-side histograms & categorical frequencies over current results */}
+      <div className="panel overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setDistCollapsed((v) => !v)}
+          aria-expanded={!distCollapsed}
+          className="w-full px-4 py-3 flex items-center justify-between gap-2 bg-zinc-50/70 hover:bg-zinc-100 transition-colors text-left"
+        >
+          <span className="text-xs font-mono uppercase text-muted font-semibold">
+            Column Distributions ({results.length} documents)
+          </span>
+          <span className="flex items-center gap-1.5 text-[10px] font-mono text-zinc-400">
+            {distCollapsed ? "Expand" : "Collapse"}
+            {distCollapsed ? (
+              <ChevronDown className="w-4 h-4 text-accent" />
+            ) : (
+              <ChevronUp className="w-4 h-4 text-accent" />
+            )}
+          </span>
+        </button>
+        {!distCollapsed && (
+          <div className="p-4 border-t border-border">
+            {columnDistributions.length === 0 ? (
+              <p className="text-xs font-mono text-zinc-400">
+                No results to summarize. Run a search first.
+              </p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+                {columnDistributions.map((chart) => (
+                  <div key={chart.key} className="border border-border rounded-sm bg-canvas p-2">
+                    <div className="text-[10px] font-mono uppercase text-muted mb-1 truncate">
+                      {chart.title}
+                    </div>
+                    <EChartBox option={chart.option} className="h-40" />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Meeting Bundle & Analytical Inspector */}
       {selectedMeeting && (
@@ -1810,6 +2132,94 @@ export const ExplorerPage: React.FC = () => {
                 <button type="submit" disabled={savingSearch} className="btn-primary text-xs">
                   <Save className="w-3.5 h-3.5" />
                   {savingSearch ? "Saving..." : "Save to Portfolio"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Save Custom SQL Filter Modal */}
+      {filterModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="panel w-full max-w-md bg-surface shadow-2xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-border bg-zinc-50 flex items-center justify-between">
+              <div className="flex items-center gap-2 text-xs font-mono uppercase font-semibold text-ink">
+                <Filter className="w-3.5 h-3.5 text-accent" />
+                Save Custom SQL Filter
+              </div>
+              <button
+                type="button"
+                onClick={() => setFilterModalOpen(false)}
+                className="text-muted hover:text-ink p-0.5"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <form onSubmit={handleCreateFilter} className="p-4 space-y-3">
+              <div>
+                <label className="block text-[11px] font-mono uppercase text-muted mb-1">
+                  Title
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={filterTitle}
+                  onChange={(e) => setFilterTitle(e.target.value)}
+                  className="input-field text-xs"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-mono uppercase text-muted mb-1">
+                  Description (Optional)
+                </label>
+                <textarea
+                  rows={2}
+                  value={filterDesc}
+                  onChange={(e) => setFilterDesc(e.target.value)}
+                  className="input-field text-xs"
+                  placeholder="What does this predicate select?"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-mono uppercase text-muted mb-1">
+                  SQL Predicate
+                </label>
+                <code className="block px-2 py-1.5 border border-border rounded-sm bg-canvas font-mono text-[11px] text-ink break-all">
+                  {sqlFilter}
+                </code>
+              </div>
+              <div className="flex items-center justify-between border border-border rounded-sm px-3 py-2 bg-canvas">
+                <span className="text-xs font-mono text-ink flex items-center gap-1.5">
+                  {filterPublic ? (
+                    <Globe className="w-3.5 h-3.5 text-accent" />
+                  ) : (
+                    <Lock className="w-3.5 h-3.5 text-muted" />
+                  )}
+                  Visibility: <strong>{filterPublic ? "Public" : "Private"}</strong>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setFilterPublic((v) => !v)}
+                  className="btn-secondary py-1 px-2.5 text-[11px]"
+                >
+                  Switch to {filterPublic ? "Private" : "Public"}
+                </button>
+              </div>
+              {filterModalMsg && (
+                <div className="text-xs font-mono text-red-600">{filterModalMsg}</div>
+              )}
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setFilterModalOpen(false)}
+                  className="btn-secondary text-xs"
+                >
+                  Cancel
+                </button>
+                <button type="submit" disabled={savingFilter} className="btn-primary text-xs">
+                  <Save className="w-3.5 h-3.5" />
+                  {savingFilter ? "Saving..." : "Save Filter"}
                 </button>
               </div>
             </form>

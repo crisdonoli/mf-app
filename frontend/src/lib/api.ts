@@ -9,6 +9,7 @@ import type {
   CompareDocumentRef,
   CompareResponse,
   CorpusStats,
+  CustomFilter,
   DataSourceMode,
   DbVersionsResponse,
   DocTypeOption,
@@ -227,6 +228,7 @@ export const api = {
     filter_zs_min_prob?: number;
     filter_rel_class?: "relevant" | "irrelevant";
     filter_rel_min_prob?: number;
+    sql_filter?: string;
     limit?: number;
     offset?: number;
   }) => {
@@ -407,6 +409,35 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  // Custom SQL Filters
+  listMyFilters: () => request<{ items: CustomFilter[] }>("/api/filters/portfolio"),
+  listCommunityFilters: () => request<{ items: CustomFilter[] }>("/api/filters/community"),
+
+  createFilter: (body: {
+    title: string;
+    description: string;
+    sql_text: string;
+    is_public: boolean;
+  }) =>
+    request<CustomFilter>("/api/filters", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  addFilterToMe: (id: number) =>
+    request<CustomFilter>(`/api/filters/${id}/add`, { method: "POST" }),
+
+  updateFilter: (
+    id: number,
+    patch: { title?: string; description?: string; is_public?: boolean }
+  ) =>
+    request<CustomFilter>(`/api/filters/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+
+  deleteFilter: (id: number) => request<void>(`/api/filters/${id}`, { method: "DELETE" }),
 
   // Feedback, Fix Requests & Notifications
   submitFixRequest: (body: {

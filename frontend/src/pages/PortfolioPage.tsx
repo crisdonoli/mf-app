@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ExternalLink,
+  Filter,
   FolderKanban,
   GitCompare,
   Globe,
@@ -14,7 +15,7 @@ import {
 } from "lucide-react";
 import { useWorkspace } from "../context/WorkspaceContext";
 import { api } from "../lib/api";
-import type { SearchHistoryItem, StudyItem, StudyType } from "../types/api";
+import type { CustomFilter, SearchHistoryItem, StudyItem, StudyType } from "../types/api";
 
 function resolveStudyType(st: StudyItem): StudyType {
   if (st.study_type === "explorer_search" || st.study_type === "history") {
@@ -35,6 +36,7 @@ export const PortfolioPage: React.FC = () => {
   const [studies, setStudies] = useState<StudyItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [typeFilter, setTypeFilter] = useState<"all" | StudyType>("all");
+  const [customFilters, setCustomFilters] = useState<CustomFilter[]>([]);
 
   const loadStudies = useCallback(async () => {
     setLoading(true);
@@ -46,9 +48,28 @@ export const PortfolioPage: React.FC = () => {
     }
   }, []);
 
+  const loadCustomFilters = useCallback(async () => {
+    const res = await api.listMyFilters();
+    setCustomFilters(res.items);
+  }, []);
+
   useEffect(() => {
     loadStudies();
   }, [loadStudies]);
+
+  useEffect(() => {
+    loadCustomFilters().catch(() => {});
+  }, [loadCustomFilters]);
+
+  const toggleFilterVisibility = async (f: CustomFilter) => {
+    await api.updateFilter(f.id, { is_public: !f.is_public });
+    await loadCustomFilters();
+  };
+
+  const handleDeleteFilter = async (filterId: number) => {
+    await api.deleteFilter(filterId);
+    await loadCustomFilters();
+  };
 
   const toggleVisibility = async (st: StudyItem) => {
     await api.updateStudy(st.id, { is_public: !st.is_public });
@@ -277,6 +298,81 @@ export const PortfolioPage: React.FC = () => {
           })}
         </div>
       )}
+
+      {/* Custom SQL Filters */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between gap-2 border-b border-border pb-2">
+          <span className="text-xs font-mono uppercase tracking-wider text-accent-dark font-semibold flex items-center gap-1.5">
+            <Filter className="w-3.5 h-3.5" />
+            Custom Filters ({customFilters.length})
+          </span>
+          <span className="text-[11px] font-mono text-zinc-400">
+            WHERE predicates over text_metadata
+          </span>
+        </div>
+
+        {customFilters.length === 0 ? (
+          <div className="panel p-6 text-center text-xs text-muted">
+            No saved SQL filters yet. Save a predicate from Explorer or Comparator to reuse it
+            here.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {customFilters.map((f) => (
+              <div key={f.id} className="panel p-4 flex flex-col gap-2">
+                <div className="flex items-start justify-between gap-2">
+                  <h2 className="text-sm font-semibold text-ink">{f.title}</h2>
+                  <span
+                    className={`mono-tag text-[10px] uppercase shrink-0 ${
+                      f.is_public ? "border-accent bg-accent-soft text-accent-dark" : ""
+                    }`}
+                  >
+                    {f.is_public ? "Public" : "Private"}
+                  </span>
+                </div>
+                {f.description && (
+                  <p className="text-xs text-muted leading-relaxed">{f.description}</p>
+                )}
+                <code className="block px-2 py-1.5 border border-border rounded-sm bg-canvas font-mono text-[11px] text-ink break-all">
+                  {f.sql_text}
+                </code>
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <span className="text-[10px] font-mono text-zinc-400">
+                    {new Date(f.created_at).toLocaleDateString()}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleFilterVisibility(f)}
+                      className="btn-secondary py-1.5 px-2.5 text-xs"
+                    >
+                      {f.is_public ? (
+                        <>
+                          <Lock className="w-3 h-3" />
+                          Make Private
+                        </>
+                      ) : (
+                        <>
+                          <Globe className="w-3 h-3" />
+                          Make Public
+                        </>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteFilter(f.id)}
+                      className="btn-secondary py-1.5 px-2 text-xs hover:text-red-600"
+                      title="Delete custom filter"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 };

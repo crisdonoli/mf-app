@@ -16,8 +16,10 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   AlertCircle,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Download,
   GitBranch,
   GitFork,
@@ -59,6 +61,7 @@ import {
 import type {
   AggregationMethod,
   CompareResponse,
+  CustomFilter,
   DataSourceMode,
   DocTypeOption,
   GranularityMode,
@@ -95,6 +98,11 @@ export const ComparatorPage: React.FC = () => {
   const [scoreFilter, setScoreFilter] = useState<ScoreThresholdFilterValue>(
     EMPTY_SCORE_THRESHOLD_FILTER
   );
+  const [filtersCollapsed, setFiltersCollapsed] = useState(false);
+  const [sqlFilter, setSqlFilter] = useState("");
+  const [savedFilters, setSavedFilters] = useState<CustomFilter[]>([]);
+  const [selectedFilterId, setSelectedFilterId] = useState("");
+  const [savingFilter, setSavingFilter] = useState(false);
   const [candidates, setCandidates] = useState<SearchDocumentItem[]>([]);
   const [candidatesTotal, setCandidatesTotal] = useState<number>(0);
   const [searching, setSearching] = useState(false);
@@ -141,6 +149,32 @@ export const ComparatorPage: React.FC = () => {
     api.getDocTypes().then((r) => setDocTypes(r.doc_types)).catch(() => {});
     api.getTaxonomy().then((t) => setMacroCategories(t.macro_categories)).catch(() => {});
   }, []);
+
+  const loadMyFilters = useCallback(async () => {
+    const res = await api.listMyFilters();
+    setSavedFilters(res.items);
+  }, []);
+
+  useEffect(() => {
+    loadMyFilters().catch(() => {});
+  }, [loadMyFilters]);
+
+  const handleSaveSqlFilter = async () => {
+    const sql = sqlFilter.trim();
+    if (!sql) return;
+    setSavingFilter(true);
+    try {
+      await api.createFilter({
+        title: `Filter (${sql.slice(0, 30)})`,
+        description: "",
+        sql_text: sql,
+        is_public: false,
+      });
+      await loadMyFilters();
+    } finally {
+      setSavingFilter(false);
+    }
+  };
 
   // Load study if ?study=<id> is present
   useEffect(() => {
@@ -201,6 +235,7 @@ export const ComparatorPage: React.FC = () => {
         scoreFilter.filterRelClass && scoreFilter.filterRelMinProb.trim() !== ""
           ? Number(scoreFilter.filterRelMinProb)
           : undefined,
+      sql_filter: sqlFilter.trim() || undefined,
       limit,
       offset: 0,
     };
@@ -1260,9 +1295,19 @@ S${t.slice_num}`;
           {/* Advanced Basket Selector & Filters */}
           <div className="panel p-4 space-y-3">
             <div className="flex items-center justify-between gap-2">
-              <h2 className="text-xs font-mono uppercase tracking-wider font-semibold text-ink">
-                Add Documents to Basket
-              </h2>
+              <button
+                type="button"
+                onClick={() => setFiltersCollapsed((v) => !v)}
+                aria-expanded={!filtersCollapsed}
+                className="inline-flex items-center gap-1.5 text-xs font-mono uppercase tracking-wider font-semibold text-ink hover:text-accent-dark transition-colors text-left"
+              >
+                {filtersCollapsed ? (
+                  <ChevronDown className="w-3.5 h-3.5 text-accent shrink-0" />
+                ) : (
+                  <ChevronUp className="w-3.5 h-3.5 text-accent shrink-0" />
+                )}
+                <span>Add Documents to Basket</span>
+              </button>
               <button
                 type="button"
                 disabled={candidatesTotal === 0 || addingAll}
@@ -1276,6 +1321,8 @@ S${t.slice_num}`;
               </button>
             </div>
 
+            {!filtersCollapsed && (
+              <>
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -1350,6 +1397,50 @@ S${t.slice_num}`;
                 />
               </div>
 
+              <div className="pt-2 border-t border-border space-y-1.5">
+                <label className="block text-[10px] font-mono uppercase text-muted">
+                  Custom SQL Filter <span className="text-zinc-400 normal-case">(WHERE)</span>
+                </label>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    value={sqlFilter}
+                    onChange={(e) => {
+                      setSqlFilter(e.target.value);
+                      setSelectedFilterId("");
+                    }}
+                    placeholder="e.g., char_count > 200"
+                    className="input-field font-mono text-[11px] flex-1 min-w-0"
+                  />
+                  <button
+                    type="button"
+                    disabled={!sqlFilter.trim() || savingFilter}
+                    onClick={handleSaveSqlFilter}
+                    title="Save this predicate to your filters"
+                    className="btn-secondary py-1 px-2 text-[11px] shrink-0"
+                  >
+                    <Save className="w-3 h-3" />
+                  </button>
+                </div>
+                <select
+                  value={selectedFilterId}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    setSelectedFilterId(id);
+                    const picked = savedFilters.find((f) => String(f.id) === id);
+                    if (picked) setSqlFilter(picked.sql_text);
+                  }}
+                  className="input-field text-xs"
+                >
+                  <option value="">Saved filters...</option>
+                  {savedFilters.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.title}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <button type="submit" disabled={searching} className="btn-secondary w-full text-xs">
                 <Search className="w-3.5 h-3.5" />
                 {searching ? "Filtering..." : "Apply Filters"}
@@ -1408,6 +1499,8 @@ S${t.slice_num}`;
                 );
               })}
             </div>
+              </>
+            )}
           </div>
         </div>
 
