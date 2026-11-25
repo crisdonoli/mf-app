@@ -24,7 +24,6 @@ import {
   Minimize2,
   RotateCcw,
   Save,
-  Search,
   Sparkles,
   X,
 } from "lucide-react";

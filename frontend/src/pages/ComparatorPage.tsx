@@ -16,10 +16,8 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   AlertCircle,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
-  ChevronUp,
   Download,
   GitBranch,
   GitFork,
@@ -28,7 +26,6 @@ import {
   Plus,
   RotateCcw,
   Save,
-  Search,
   Sliders,
   Trash2,
   X,
@@ -102,7 +99,6 @@ export const ComparatorPage: React.FC = () => {
     EMPTY_SCORE_THRESHOLD_FILTER
   );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [filtersCollapsed, setFiltersCollapsed] = useState(false);
   const [sqlFilter, setSqlFilter] = useState("");
   const [savedFilters, setSavedFilters] = useState<CustomFilter[]>([]);
   const [selectedFilterId, setSelectedFilterId] = useState("");
